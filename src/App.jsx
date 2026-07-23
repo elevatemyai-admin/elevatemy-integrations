@@ -2,9 +2,9 @@ import React, { useState, useEffect, useMemo, useCallback } from "react";
 import {
   LayoutDashboard, Users, ListChecks, Plus, Search, X, ExternalLink, Github, Rocket,
   Newspaper, Share2, ClipboardCheck, CheckCircle2, Circle, AlertTriangle, Trash2,
-  ChevronRight, Save, Loader2, Calendar, User, Users2, DollarSign, Megaphone,
+  ChevronRight, ChevronDown, Save, Loader2, Calendar, Clock, History, Mail, User, Users2, DollarSign, Megaphone,
   Settings as SettingsIcon, RefreshCw, Wifi, WifiOff, TrendingUp, CreditCard, Activity,
-  Inbox, UserPlus, Check, Send, FileSignature, Eye, EyeOff
+  Inbox, UserPlus, Check, Send, FileSignature, Eye, EyeOff, Sparkles, Linkedin, Facebook, Copy, Link2
 } from "lucide-react";
 
 // ---------- constants ----------
@@ -106,6 +106,7 @@ const emptyClient = () => ({
   firstName: "",
   lastName: "",
   company: "",
+  website: "",
   email: "",
   phone: "",
   status: "lead",
@@ -116,6 +117,7 @@ const emptyClient = () => ({
   assessment: emptyAssessment(),
   newsletter: { subscribed: false, link: "" },
   zoho: { link: "", status: "not started", lastSent: "" },
+  engagementHistory: [],
   social: [],
   dashboard: { vercelUrl: "", githubUrl: "", lastInterview: "", notes: "" },
   tasks: [],
@@ -247,6 +249,9 @@ export default function App() {
   const [marketingCampaigns, setMarketingCampaigns] = useState([]);
   const [activityLog, setActivityLog] = useState([]);
   const [team, setTeam] = useState([]);
+  const [emailTemplates, setEmailTemplates] = useState([]);
+  const [pendingEmails, setPendingEmails] = useState([]);
+  const [marketingHub, setMarketingHub] = useState({ campaigns: [], contentItems: [] });
   const [loading, setLoading] = useState(true);
   const [saveState, setSaveState] = useState("idle");
 
@@ -257,6 +262,7 @@ export default function App() {
   const [selectedId, setSelectedId] = useState(null);
   const [detailTab, setDetailTab] = useState("profile");
   const [showAddModal, setShowAddModal] = useState(false);
+  const [emailComposerClient, setEmailComposerClient] = useState(null);
   const [taskOwnerFilter, setTaskOwnerFilter] = useState("all");
   const [taskAssigneeFilter, setTaskAssigneeFilter] = useState("all");
 
@@ -265,41 +271,64 @@ export default function App() {
   const [zohoError, setZohoError] = useState("");
   const [sourceData, setSourceData] = useState(() => Object.fromEntries(SOURCES.map(s => [s.key, { status: "unconfigured", items: [] }])));
 
+  const loadCrmData = useCallback(async () => {
+    try {
+      const res = await fetch("/api/crm/data");
+      const parsed = await res.json();
+      if (parsed) {
+        setClients((parsed.clients || []).map(c => {
+          const hasSplitName = c.firstName || c.lastName;
+          const nameParts = (c.name || "").trim().split(/\s+/).filter(Boolean);
+          const backfilledFirst = hasSplitName ? (c.firstName || "") : (nameParts[0] || "");
+          const backfilledLast = hasSplitName ? (c.lastName || "") : nameParts.slice(1).join(" ");
+          return {
+            ...emptyClient(), ...c,
+            firstName: backfilledFirst,
+            lastName: backfilledLast,
+            assessment: { ...emptyAssessment(), ...(c.assessment || {}) },
+            contract: { ...emptyContract(), ...(c.contract || {}) },
+          };
+        }));
+        setMarketingCampaigns(parsed.marketingCampaigns || []);
+        setActivityLog(parsed.activityLog || []);
+        setTeam(parsed.team || []);
+        setEmailTemplates(parsed.emailTemplates || []);
+        setPendingEmails(parsed.pendingEmails || []);
+        setMarketingHub(parsed.marketingHub || { campaigns: [], contentItems: [] });
+      }
+    } catch (e) { /* first run — nothing stored yet, or a refresh failed silently */ }
+  }, []);
+
   useEffect(() => {
     (async () => {
-      try {
-        const res = await fetch("/api/crm/data");
-        const parsed = await res.json();
-        if (parsed) {
-          setClients((parsed.clients || []).map(c => {
-            const hasSplitName = c.firstName || c.lastName;
-            const nameParts = (c.name || "").trim().split(/\s+/).filter(Boolean);
-            const backfilledFirst = hasSplitName ? (c.firstName || "") : (nameParts[0] || "");
-            const backfilledLast = hasSplitName ? (c.lastName || "") : nameParts.slice(1).join(" ");
-            return {
-              ...emptyClient(), ...c,
-              firstName: backfilledFirst,
-              lastName: backfilledLast,
-              assessment: { ...emptyAssessment(), ...(c.assessment || {}) },
-              contract: { ...emptyContract(), ...(c.contract || {}) },
-            };
-          }));
-          setMarketingCampaigns(parsed.marketingCampaigns || []);
-          setActivityLog(parsed.activityLog || []);
-          setTeam(parsed.team || []);
-        }
-      } catch (e) { /* first run — nothing stored yet */ }
-      finally { setLoading(false); }
+      await loadCrmData();
+      setLoading(false);
     })();
-  }, []);
+  }, [loadCrmData]);
 
   const persist = useCallback(async (next) => {
     setSaveState("saving");
     try {
+      // The CRM's save endpoint overwrites the whole stored blob rather
+      // than merging (see api/crm/data.js) — fine for fields this app
+      // owns (clients, tasks, etc.), but settings.gmailLastSyncTs,
+      // pendingEmails, and marketingHub are written by the daily sync job /
+      // AI drafting and approval steps running server-side, not by
+      // anything in this browser tab.
+      // Fetching the current server state right before writing (instead
+      // of trusting whatever this tab loaded at page-open) closes almost
+      // all of the window where a save from this tab could otherwise
+      // silently wipe out a backend-written field with stale data.
+      let serverOwned = {};
+      try {
+        const current = await fetch("/api/crm/data").then(r => r.json());
+        serverOwned = { settings: current?.settings, pendingEmails: current?.pendingEmails, marketingHub: current?.marketingHub };
+      } catch (e) { /* if this fails, fall through and save without them rather than blocking the save entirely */ }
+
       const res = await fetch("/api/crm/data", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(next),
+        body: JSON.stringify({ ...serverOwned, ...next }),
       });
       setSaveState(res.ok ? "saved" : "error");
     } catch (e) { setSaveState("error"); }
@@ -307,8 +336,8 @@ export default function App() {
   }, []);
 
   const snapshot = useCallback((overrides = {}) => ({
-    clients, marketingCampaigns, activityLog, team, ...overrides,
-  }), [clients, marketingCampaigns, activityLog, team]);
+    clients, marketingCampaigns, activityLog, team, emailTemplates, ...overrides,
+  }), [clients, marketingCampaigns, activityLog, team, emailTemplates]);
 
   function logActivity(text, list = activityLog) {
     const entry = { id: uid(), text, ts: new Date().toISOString() };
@@ -332,6 +361,84 @@ export default function App() {
       persist(snapshot({ marketingCampaigns: next, activityLog: nextLog }));
       return next;
     });
+  }
+  function updateEmailTemplates(updater) {
+    setEmailTemplates(prev => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      persist(snapshot({ emailTemplates: next }));
+      return next;
+    });
+  }
+  function addEmailTemplate(t) { updateEmailTemplates(prev => [{ id: uid(), ...t }, ...prev]); }
+  function removeEmailTemplate(id) { updateEmailTemplates(prev => prev.filter(t => t.id !== id)); }
+  function patchEmailTemplate(id, patch) { updateEmailTemplates(prev => prev.map(t => t.id === id ? { ...t, ...patch } : t)); }
+
+  async function approvePendingEmail(id, action, edits) {
+    try {
+      const res = await fetch("/api/gmail/approve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pendingEmailId: id, action, editedSubject: edits?.subject, editedBody: edits?.body }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || "Failed");
+      await loadCrmData();
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  }
+
+  async function createMarketingCampaign(data) {
+    try {
+      const res = await fetch("/api/marketing/campaigns", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
+      const result = await res.json();
+      if (!res.ok || !result.ok) throw new Error(result.error || "Failed");
+      await loadCrmData();
+      return { ok: true, campaign: result.campaign };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  }
+
+  async function generateMarketingContent({ campaignId, type, brief, targetTier }) {
+    try {
+      const res = await fetch("/api/marketing/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ campaignId, type, brief, targetTier }),
+      });
+      const result = await res.json();
+      if (!res.ok || !result.ok) throw new Error(result.error || "Generation failed");
+      await loadCrmData();
+      return { ok: true, item: result.item };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  }
+
+  async function approveMarketingContent(itemId, action, edits, extra) {
+    try {
+      const res = await fetch("/api/marketing/approve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          itemId, action,
+          editedSubject: edits?.subject, editedBody: edits?.body,
+          targetTier: extra?.targetTier, scheduledFor: extra?.scheduledFor,
+        }),
+      });
+      const result = await res.json();
+      if (!res.ok || !result.ok) throw new Error(result.error || "Failed");
+      await loadCrmData();
+      return { ok: true, ...result };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
   }
 
   const selectedClient = useMemo(() => clients.find(c => c.id === selectedId) || null, [clients, selectedId]);
@@ -521,8 +628,9 @@ export default function App() {
     { key: "overview", label: "Dashboard", icon: LayoutDashboard },
     { key: "clients", label: "Clients", icon: Users },
     { key: "import", label: "Import", icon: Inbox },
-    { key: "tasks", label: "Tasks & Campaigns", icon: ListChecks },
+    { key: "tasks", label: "Tasks", icon: ListChecks },
     { key: "marketing", label: "Marketing", icon: Megaphone },
+    { key: "content", label: "Content Studio", icon: Sparkles },
     { key: "settings", label: "Settings", icon: SettingsIcon },
   ];
 
@@ -530,7 +638,17 @@ export default function App() {
     <div className="crm-root">
       <style>{`
         .crm-root {
-          --ink:#161B22; --navy:#1B2430; --navy-soft:#232E3E; --cloud:#F5F6F4; --cloud-dim:#ECEEEA;
+          // Brand colors below are pulled directly from elevatemy.ai's real,
+          // live client-facing emails (the nurture/results templates), not
+          // guessed — confirmed hex values: #13294b and #194f90 (navy,
+          // headers/dark backgrounds), #23496d (footer/medium navy),
+          // #e8f0f7 (page background), #f8f6f2 (card/footer background).
+          // Gold/green/coral intentionally left as the CRM's existing
+          // accent/status colors — the actual brand palette doesn't use
+          // gold at all (its real accents are purple #8E7CC3 for buttons
+          // and teal #00a4bd for links), but gold was kept as the CRM's own
+          // accent by choice rather than switching to either of those.
+          --ink:#1a1a1a; --navy:#13294b; --navy-soft:#23496d; --cloud:#e8f0f7; --cloud-dim:#d5dde3;
           --card:#FFFFFF; --gold:#E8A33D; --gold-soft:#FBEBD2; --green:#4C7A5E; --green-soft:#E1EBE4;
           --coral:#C7554F; --coral-soft:#F5DEDC; --slate:#6B7280; --slate-line:#DADEE3;
           font-family:'Inter',-apple-system,sans-serif; background:var(--cloud); color:var(--ink);
@@ -674,6 +792,7 @@ export default function App() {
               {view === "import" && "Import"}
               {view === "tasks" && "Tasks & Campaigns"}
               {view === "marketing" && "Marketing"}
+              {view === "content" && "Content Studio"}
               {view === "settings" && "Settings"}
             </h1>
             <p>
@@ -682,6 +801,7 @@ export default function App() {
               {view === "import" && "Pull in assessment takers, campaign responders, and subscribers from your connected systems."}
               {view === "tasks" && "What clients owe us, and what we owe clients."}
               {view === "marketing" && "CPA campaigns and prospecting activity, live from Zoho once connected."}
+              {view === "content" && "AI-drafted campaigns, emails, and social posts — review and approve, nothing goes out without you."}
               {view === "settings" && "Connect the CRM to your Vercel API routes."}
             </p>
           </div>
@@ -693,7 +813,8 @@ export default function App() {
             <div className="empty-state"><Loader2 className="spin" size={20} /></div>
           ) : view === "overview" ? (
             <OverviewView
-              clients={clients} revenue={revenue} activityLog={activityLog}
+              clients={clients} revenue={revenue} activityLog={activityLog} team={team}
+              pendingEmails={pendingEmails} onApprovePendingEmail={approvePendingEmail}
               assessedCount={assessedCount} activeCampaignCount={activeCampaignCount} overdueCount={overdueCount}
               marketingCampaigns={marketingCampaigns} zohoLive={zohoLive} zohoStatus={zohoStatus}
               onOpen={(id) => { setSelectedId(id); setView("clients"); setDetailTab("profile"); }}
@@ -704,7 +825,7 @@ export default function App() {
               apiBaseUrl={API_BASE} onToggleHidden={(id, hidden) => patchClient(id, { hidden })}
               onOpen={(id) => { setSelectedId(id); setDetailTab("profile"); }} total={clients.length} />
           ) : view === "import" ? (
-            <ImportView sourceData={sourceData} onRefresh={checkSources} apiConfigured={true}
+            <ImportView sourceData={sourceData} onRefresh={checkSources} apiConfigured={true} activityLog={activityLog}
               findClientByEmail={findClientByEmail} onAdd={addFromCandidate} onAddAll={addAllNew} />
           ) : view === "tasks" ? (
             <TasksView tasks={allTasks} ownerFilter={taskOwnerFilter} setOwnerFilter={setTaskOwnerFilter}
@@ -713,8 +834,16 @@ export default function App() {
           ) : view === "marketing" ? (
             <MarketingView campaigns={marketingCampaigns} zohoLive={zohoLive} zohoStatus={zohoStatus} onRefresh={checkZoho}
               onAdd={addCampaign} onPatch={patchCampaign} onRemove={removeCampaign} apiConfigured={true} />
+          ) : view === "content" ? (
+            <ContentStudioView
+              marketingHub={marketingHub}
+              onCreateCampaign={createMarketingCampaign}
+              onGenerate={generateMarketingContent}
+              onApprove={approveMarketingContent}
+            />
           ) : (
-            <SettingsView zohoStatus={zohoStatus} zohoError={zohoError} onTest={checkZoho} team={team} onAddTeamMember={addTeamMember} onRemoveTeamMember={removeTeamMember} />
+            <SettingsView zohoStatus={zohoStatus} zohoError={zohoError} onTest={checkZoho} team={team} onAddTeamMember={addTeamMember} onRemoveTeamMember={removeTeamMember}
+              emailTemplates={emailTemplates} onAddTemplate={addEmailTemplate} onRemoveTemplate={removeEmailTemplate} onPatchTemplate={patchEmailTemplate} />
           )}
         </div>
       </div>
@@ -741,12 +870,13 @@ export default function App() {
                 { k: "dashboard", label: "Dashboard", icon: Github },
                 { k: "billing", label: "Billing", icon: CreditCard },
                 { k: "tasks", label: "Tasks", icon: ListChecks },
+                { k: "activity", label: "Activity", icon: History },
               ].map(t => (
                 <div key={t.k} className={"tab" + (detailTab === t.k ? " active" : "")} onClick={() => setDetailTab(t.k)}><t.icon size={13} /> {t.label}</div>
               ))}
             </div>
             <div className="drawer-body">
-              {detailTab === "profile" && <ProfileTab client={selectedClient} onPatch={(p) => patchClient(selectedClient.id, p)} onDelete={() => deleteClient(selectedClient.id)} />}
+              {detailTab === "profile" && <ProfileTab client={selectedClient} onPatch={(p) => patchClient(selectedClient.id, p)} onDelete={() => deleteClient(selectedClient.id)} onComposeEmail={() => setEmailComposerClient(selectedClient)} />}
               {detailTab === "assessment" && <AssessmentTab client={selectedClient} onPatch={(p) => patchNested(selectedClient.id, "assessment", p)} />}
               {detailTab === "campaigns" && (
                 <CampaignsTab client={selectedClient}
@@ -759,6 +889,7 @@ export default function App() {
               {detailTab === "dashboard" && <DashboardTab client={selectedClient} onPatch={(p) => patchNested(selectedClient.id, "dashboard", p)} />}
               {detailTab === "billing" && <BillingTab client={selectedClient} onAdd={(e) => addBilling(selectedClient.id, e)} onPatch={(bid, p) => patchBilling(selectedClient.id, bid, p)} onRemove={(bid) => removeBilling(selectedClient.id, bid)} onPatchClient={(p) => patchClient(selectedClient.id, p)} />}
               {detailTab === "tasks" && <ClientTasksTab client={selectedClient} team={team} onAdd={(t) => addTask(selectedClient.id, t)} onToggle={(tid) => toggleTask(selectedClient.id, tid)} onRemove={(tid) => removeTask(selectedClient.id, tid)} onPatch={(tid, patch) => patchTask(selectedClient.id, tid, patch)} />}
+              {detailTab === "activity" && <ClientActivityTab client={selectedClient} activityLog={activityLog} />}
             </div>
           </div>
         </div>
@@ -769,18 +900,144 @@ export default function App() {
           <div className="modal"><AddClientForm onCancel={() => setShowAddModal(false)} onSave={(data) => { addClient(data); setShowAddModal(false); }} /></div>
         </div>
       )}
+
+      {emailComposerClient && (
+        <div className="overlay center" onClick={(e) => { if (e.target === e.currentTarget) setEmailComposerClient(null); }}>
+          <div className="modal">
+            <EmailComposer
+              client={emailComposerClient}
+              onCancel={() => setEmailComposerClient(null)}
+              onSent={async () => { setEmailComposerClient(null); await loadCrmData(); }}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 // ---------- Overview / Dashboard ----------
 
-function OverviewView({ clients, revenue, activityLog, assessedCount, activeCampaignCount, overdueCount, marketingCampaigns, zohoLive, zohoStatus, onOpen }) {
+// Classifies an activity-log entry's free-text string into a labeled,
+// colored type. There's no structured "type" field on activity entries
+// (they're built as plain text from many different call sites — the CRM
+// itself, the assessment submit endpoint, and the Zoho/Beehiiv sync job),
+// so this matches on the known phrasing each source actually produces.
+// If a new activity message pattern gets added later and doesn't match
+// anything here, it safely falls into "Other" rather than breaking.
+function categorizeActivity(text) {
+  const t = text || "";
+  if (/completed the .* assessment/i.test(t)) return { key: "assessment", label: "Assessment completed", tone: "green" };
+  if (/emailed us:/i.test(t)) return { key: "email", label: "Emails received", tone: "gold" };
+  if (/^Emailed .*:/i.test(t)) return { key: "email_out", label: "Emails sent", tone: "navy" };
+  if (/^(Added|Merged) .* (from|data into)/i.test(t) || /upgraded to|tagged CPA Lead|Corrected name for|Renamed \d+ existing/i.test(t)) return { key: "imported", label: "Imported / synced", tone: "navy" };
+  if (/^Completed task/i.test(t)) return { key: "task", label: "Tasks", tone: "gold" };
+  if (/^Added client|^Removed client/i.test(t)) return { key: "client", label: "Client changes", tone: "slate" };
+  if (/^Logged \$/i.test(t)) return { key: "billing", label: "Billing", tone: "green" };
+  if (/^Added marketing campaign/i.test(t)) return { key: "campaign", label: "Campaigns", tone: "gold" };
+  if (/^Added team member|^Removed team member/i.test(t)) return { key: "team", label: "Team", tone: "slate" };
+  return { key: "other", label: "Other", tone: "slate" };
+}
+
+// Simple expand/collapse section with a colored count pill in the header.
+// Used anywhere we group a list into labeled buckets (activity feed, due
+// soon, tasks-by-client) so the same look/interaction is consistent
+// everywhere rather than rebuilding this per-section.
+function CollapsibleGroup({ label, tone = "slate", count, defaultOpen = true, children }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div style={{ marginBottom: 10, border: "1px solid var(--slate-line, #E4E7EC)", borderRadius: 10, overflow: "hidden" }}>
+      <div
+        onClick={() => setOpen(o => !o)}
+        style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", cursor: "pointer", background: "var(--cloud-dim, #ECEEEA)", userSelect: "none" }}
+      >
+        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        <Pill tone={tone}>{label}</Pill>
+        <span style={{ fontSize: 12, color: "var(--slate)" }}>{count}</span>
+      </div>
+      {open && <div style={{ padding: "4px 12px" }}>{children}</div>}
+    </div>
+  );
+}
+
+// Buckets a task's due date into an urgency tag used for color-coding
+// within the Due Soon groups. Reuses the existing isOverdue() logic so
+// "overdue" stays consistent with the rest of the app.
+function urgencyOf(t) {
+  if (isOverdue(t)) return { label: "overdue", tone: "coral" };
+  if (!t.dueDate) return { label: "no due date", tone: "slate" };
+  const due = new Date(t.dueDate);
+  const today = new Date(todayISO());
+  const diffDays = Math.round((due - today) / 86400000);
+  if (diffDays <= 0) return { label: "today", tone: "gold" };
+  if (diffDays <= 7) return { label: "this week", tone: "navy" };
+  return { label: "later", tone: "slate" };
+}
+
+function PendingEmailCard({ draft, clients, onOpen, onApprove }) {
+  const client = clients.find(c => c.id === draft.clientId);
+  const [editing, setEditing] = useState(false);
+  const [subject, setSubject] = useState(draft.subject);
+  const [body, setBody] = useState(draft.body);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function handle(action) {
+    setBusy(true); setError("");
+    const result = await onApprove(draft.id, action, editing ? { subject, body } : undefined);
+    setBusy(false);
+    if (!result.ok) setError(result.error);
+  }
+
+  return (
+    <div className="card" style={{ padding: 14, marginBottom: 10, borderLeft: "3px solid var(--coral)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+        <div>
+          <div style={{ fontSize: 12.5, color: "var(--slate)" }}>
+            AI-drafted reply to <span className="client-name" style={{ cursor: client ? "pointer" : "default" }} onClick={() => client && onOpen(client.id)}>{client ? clientDisplayName(client) : "Unknown client"}</span>
+            {draft.sourceSubject && <> — re: "{draft.sourceSubject}"</>}
+          </div>
+        </div>
+        <span style={{ fontSize: 11, color: "var(--slate)" }}>{timeAgo(draft.createdAt)}</span>
+      </div>
+
+      {editing ? (
+        <>
+          <Field label="Subject"><input value={subject} onChange={e => setSubject(e.target.value)} /></Field>
+          <Field label="Body"><textarea rows={6} value={body} onChange={e => setBody(e.target.value)} style={{ width: "100%", resize: "vertical" }} /></Field>
+        </>
+      ) : (
+        <>
+          <div className="task-title" style={{ marginBottom: 4 }}>{draft.subject}</div>
+          <div style={{ fontSize: 12.5, color: "var(--slate)", whiteSpace: "pre-wrap" }}>{draft.body}</div>
+        </>
+      )}
+
+      {error && <div style={{ fontSize: 12, color: "var(--coral)", marginTop: 8 }}>{error}</div>}
+
+      <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+        <button className="btn btn-gold btn-sm" disabled={busy} onClick={() => handle("approve")}>
+          {busy ? <Loader2 size={13} className="spin" /> : <Check size={13} />} Approve & send
+        </button>
+        <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => setEditing(e => !e)}>
+          {editing ? "Cancel edit" : "Edit first"}
+        </button>
+        <button className="btn btn-danger btn-sm" disabled={busy} onClick={() => handle("reject")}>
+          <X size={13} /> Reject
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function OverviewView({ clients, revenue, activityLog, team, pendingEmails, onApprovePendingEmail, assessedCount, activeCampaignCount, overdueCount, marketingCampaigns, zohoLive, zohoStatus, onOpen }) {
   const upcoming = useMemo(() => {
     const list = [];
     clients.forEach(c => (c.tasks || []).forEach(t => { if (t.status !== "done") list.push({ ...t, clientName: clientDisplayName(c) }); }));
-    return list.sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999")).slice(0, 6);
+    return list.sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999"));
   }, [clients]);
+
+  function memberName(id) { return (team || []).find(m => m.id === id)?.name || ""; }
 
   const marketing = zohoStatus === "live" ? zohoLive : marketingCampaigns;
   const totalSpend = marketing.reduce((s, c) => s + (Number(c.spend) || 0), 0);
@@ -789,6 +1046,19 @@ function OverviewView({ clients, revenue, activityLog, assessedCount, activeCamp
 
   return (
     <>
+      {(pendingEmails || []).length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <div className="section-title" style={{ color: "var(--coral)" }}>
+            <AlertTriangle size={14} /> Pending email approvals ({pendingEmails.length})
+          </div>
+          <div>
+            {pendingEmails.map(p => (
+              <PendingEmailCard key={p.id} draft={p} clients={clients} onOpen={onOpen} onApprove={onApprovePendingEmail} />
+            ))}
+          </div>
+        </div>
+      )}
+
       <div style={{ display: "flex", gap: 10, marginBottom: 18 }}>
         <a href="https://campaigns.zoho.com/campaigns/org930482684/home.do" target="_blank" rel="noreferrer" className="btn btn-ghost btn-sm">
           <Rocket size={13} /> Open Zoho Campaigns <ExternalLink size={11} />
@@ -829,26 +1099,61 @@ function OverviewView({ clients, revenue, activityLog, assessedCount, activeCamp
           </div>
 
           <div className="section-title">Due soon</div>
-          <div className="card" style={{ padding: "6px 16px" }}>
-            {upcoming.length === 0 ? <div className="empty-state" style={{ padding: 24 }}>Nothing on the horizon.</div> : upcoming.map(t => (
-              <div className="task-row" key={t.id}>
-                <span className="task-check"><Circle size={16} /></span>
-                <div style={{ flex: 1 }}>
-                  <div className="task-title">{t.title}</div>
-                  <div className="task-meta"><User size={11} /> {t.clientName} · owed by {t.owner === "client" ? "client" : "us"}</div>
-                </div>
-                <Pill tone={isOverdue(t) ? "coral" : "slate"}>{fmtDate(t.dueDate)}</Pill>
-              </div>
-            ))}
+          <div style={{ marginBottom: 24 }}>
+            {upcoming.length === 0 ? (
+              <div className="card empty-state" style={{ padding: 24 }}>Nothing on the horizon.</div>
+            ) : (() => {
+              const groups = new Map();
+              upcoming.forEach(t => {
+                const memberKey = t.assignedTo || "unassigned";
+                const label = t.assignedTo ? (memberName(t.assignedTo) || "Unknown") : "Unassigned";
+                if (!groups.has(memberKey)) groups.set(memberKey, { label, items: [] });
+                groups.get(memberKey).items.push(t);
+              });
+              // Unassigned sorts last — assigned work is what you're grouping to prioritize.
+              const sortedGroups = Array.from(groups.values()).sort((a, b) => a.label === "Unassigned" ? 1 : b.label === "Unassigned" ? -1 : a.label.localeCompare(b.label));
+              return sortedGroups.map(g => (
+                <CollapsibleGroup key={g.label} label={g.label} tone={g.items.some(isOverdue) ? "coral" : "navy"} count={g.items.length}>
+                  {g.items.map(t => {
+                    const u = urgencyOf(t);
+                    return (
+                      <div className="task-row" key={t.id}>
+                        <span className="task-check"><Circle size={16} /></span>
+                        <div style={{ flex: 1 }}>
+                          <div className="task-title">{t.title}</div>
+                          <div className="task-meta"><User size={11} /> {t.clientName} · owed by {t.owner === "client" ? "client" : "us"}{t.blockStart && <> · working {fmtDate(t.blockStart)}–{fmtDate(t.blockEnd)}</>}</div>
+                        </div>
+                        <Pill tone={u.tone}>{u.label}</Pill>
+                        {t.dueDate && <Pill tone="slate">{fmtDate(t.dueDate)}</Pill>}
+                      </div>
+                    );
+                  })}
+                </CollapsibleGroup>
+              ));
+            })()}
           </div>
         </div>
 
         <div>
           <div className="section-title">Current activity</div>
-          <div className="card" style={{ padding: "6px 16px", marginBottom: 24 }}>
-            {activityLog.length === 0 ? <div className="empty-state" style={{ padding: 24 }}>Activity will show up here as you use the CRM.</div> : activityLog.slice(0, 10).map(a => (
-              <div className="activity-row" key={a.id}><span className="activity-dot" /><span>{a.text}</span><span className="activity-time">{timeAgo(a.ts)}</span></div>
-            ))}
+          <div style={{ marginBottom: 24 }}>
+            {activityLog.length === 0 ? (
+              <div className="card empty-state" style={{ padding: 24 }}>Activity will show up here as you use the CRM.</div>
+            ) : (() => {
+              const groups = new Map();
+              activityLog.forEach(a => {
+                const cat = categorizeActivity(a.text);
+                if (!groups.has(cat.key)) groups.set(cat.key, { ...cat, items: [] });
+                groups.get(cat.key).items.push(a);
+              });
+              return Array.from(groups.values()).map(g => (
+                <CollapsibleGroup key={g.key} label={g.label} tone={g.tone} count={g.items.length} defaultOpen={g.key !== "other"}>
+                  {g.items.map(a => (
+                    <div className="activity-row" key={a.id}><span className="activity-dot" /><span>{a.text}</span><span className="activity-time">{timeAgo(a.ts)}</span></div>
+                  ))}
+                </CollapsibleGroup>
+              ));
+            })()}
           </div>
 
           <div className="section-title">Prospecting snapshot {zohoStatus === "live" && <Pill tone="green">live from Zoho</Pill>}</div>
@@ -1054,6 +1359,21 @@ function TasksView({ tasks, ownerFilter, setOwnerFilter, team, assigneeFilter, s
     return (a.dueDate || "9999").localeCompare(b.dueDate || "9999");
   });
   function memberName(id) { return (team || []).find(m => m.id === id)?.name || ""; }
+
+  const groups = useMemo(() => {
+    const map = new Map();
+    filtered.forEach(t => {
+      if (!map.has(t.clientId)) map.set(t.clientId, { clientName: t.clientName, items: [] });
+      map.get(t.clientId).items.push(t);
+    });
+    // Clients with any overdue task float to the top — that's what needs attention first.
+    return Array.from(map.values()).sort((a, b) => {
+      const ao = a.items.some(isOverdue) ? 0 : 1, bo = b.items.some(isOverdue) ? 0 : 1;
+      if (ao !== bo) return ao - bo;
+      return (a.clientName || "").localeCompare(b.clientName || "");
+    });
+  }, [filtered]);
+
   return (
     <>
       <div className="toolbar">
@@ -1067,18 +1387,26 @@ function TasksView({ tasks, ownerFilter, setOwnerFilter, team, assigneeFilter, s
         </select>
         <div style={{ fontSize: 12, color: "var(--slate)" }}>{filtered.filter(t => t.status !== "done").length} open</div>
       </div>
-      <div className="card" style={{ padding: "6px 16px" }}>
-        {filtered.length === 0 ? <div className="empty-state"><div className="display">No tasks yet</div>Add tasks from a client's Tasks tab to track campaigns that keep everyone on track.</div> : filtered.map(t => (
-          <div className="task-row" key={t.id + t.clientId}>
-            <span className="task-check" onClick={() => onToggle(t.clientId, t.id)}>{t.status === "done" ? <CheckCircle2 size={16} /> : <Circle size={16} />}</span>
-            <div style={{ flex: 1, cursor: "pointer" }} onClick={() => onOpenClient(t.clientId)}>
-              <div className={"task-title" + (t.status === "done" ? " done" : "")}>{t.title}</div>
-              <div className="task-meta"><User size={11} /> {t.clientName} · <Pill tone={t.owner === "client" ? "gold" : "navy"}>{t.owner === "client" ? "client owes" : "we owe"}</Pill> {t.assignedTo && memberName(t.assignedTo) && <Pill tone="slate">{memberName(t.assignedTo)}</Pill>}</div>
+      {groups.length === 0 ? (
+        <div className="card empty-state"><div className="display">No tasks yet</div>Add tasks from a client's Tasks tab to track campaigns that keep everyone on track.</div>
+      ) : groups.map(g => (
+        <CollapsibleGroup key={g.clientName} label={g.clientName || "Unknown client"} tone={g.items.some(isOverdue) ? "coral" : "navy"} count={g.items.length}>
+          {g.items.map(t => (
+            <div className="task-row" key={t.id + t.clientId}>
+              <span className="task-check" onClick={() => onToggle(t.clientId, t.id)}>{t.status === "done" ? <CheckCircle2 size={16} /> : <Circle size={16} />}</span>
+              <div style={{ flex: 1, cursor: "pointer" }} onClick={() => onOpenClient(t.clientId)}>
+                <div className={"task-title" + (t.status === "done" ? " done" : "")}>{t.title}</div>
+                <div className="task-meta">
+                  <Pill tone={t.owner === "client" ? "gold" : "navy"}>{t.owner === "client" ? "client owes" : "we owe"}</Pill>
+                  {t.assignedTo && memberName(t.assignedTo) && <Pill tone="slate">{memberName(t.assignedTo)}</Pill>}
+                  {t.blockStart && <span>· <Clock size={11} /> work {fmtDate(t.blockStart)}–{fmtDate(t.blockEnd)}</span>}
+                </div>
+              </div>
+              {t.dueDate && <Pill tone={isOverdue(t) ? "coral" : "slate"}>{fmtDate(t.dueDate)}</Pill>}
             </div>
-            {t.dueDate && <Pill tone={isOverdue(t) ? "coral" : "slate"}>{fmtDate(t.dueDate)}</Pill>}
-          </div>
-        ))}
-      </div>
+          ))}
+        </CollapsibleGroup>
+      ))}
     </>
   );
 }
@@ -1179,9 +1507,290 @@ function CampaignForm({ onSave, onCancel, initial }) {
   );
 }
 
+// ---------- Content Studio ----------
+
+// Friendly tier names the frontend is allowed to know about — never the
+// actual Zoho list keys behind them (those are env-var secrets, resolved
+// server-side in api/marketing/approve.js via lib/zoho.js's TIER_LIST_KEYS).
+const CONTENT_TARGET_TIERS = [
+  { group: "General Business", tiers: ["Exploring", "Building", "Emerging", "AI-Ready"] },
+  { group: "Financial Services", tiers: ["Early Stage", "Developing", "Intermediate", "Advanced"] },
+];
+
+const CONTENT_TYPE_LABELS = {
+  email: "Email",
+  linkedin_post: "LinkedIn post",
+  facebook_post: "Facebook post",
+};
+
+function NewCampaignForm({ onCreate, onDone }) {
+  const [name, setName] = useState("");
+  const [goal, setGoal] = useState("");
+  const [audience, setAudience] = useState("");
+  const [notes, setNotes] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(e) {
+    e.preventDefault();
+    if (!name.trim()) return;
+    setBusy(true); setError("");
+    const result = await onCreate({ name: name.trim(), goal, audience, notes });
+    setBusy(false);
+    if (!result.ok) { setError(result.error); return; }
+    onDone();
+  }
+
+  return (
+    <form onSubmit={submit} className="card" style={{ padding: 16, marginBottom: 16 }}>
+      <Field label="Campaign name"><input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Q3 Referral Push" /></Field>
+      <Field label="Goal (optional)"><input value={goal} onChange={e => setGoal(e.target.value)} placeholder="e.g. Re-engage stalled FP leads" /></Field>
+      <Field label="Audience (optional)"><input value={audience} onChange={e => setAudience(e.target.value)} placeholder="e.g. FP leads, Building/Emerging tier" /></Field>
+      <Field label="Notes (optional)"><textarea rows={2} value={notes} onChange={e => setNotes(e.target.value)} style={{ width: "100%", resize: "vertical" }} /></Field>
+      {error && <div style={{ fontSize: 12, color: "var(--coral)", marginBottom: 8 }}>{error}</div>}
+      <div style={{ display: "flex", gap: 8 }}>
+        <button type="submit" className="btn btn-gold btn-sm" disabled={busy || !name.trim()}>
+          {busy ? <Loader2 size={13} className="spin" /> : <Save size={13} />} Create campaign
+        </button>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={onDone}>Cancel</button>
+      </div>
+    </form>
+  );
+}
+
+function GenerateContentForm({ campaigns, onGenerate }) {
+  const [campaignId, setCampaignId] = useState("");
+  const [type, setType] = useState("email");
+  const [brief, setBrief] = useState("");
+  const [targetTier, setTargetTier] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [lastResult, setLastResult] = useState(null);
+
+  async function submit(e) {
+    e.preventDefault();
+    setBusy(true); setError(""); setLastResult(null);
+    const result = await onGenerate({ campaignId: campaignId || null, type, brief, targetTier: type === "email" ? targetTier : undefined });
+    setBusy(false);
+    if (!result.ok) { setError(result.error); return; }
+    setLastResult(result.item);
+    setBrief("");
+  }
+
+  return (
+    <form onSubmit={submit} className="card" style={{ padding: 16, marginBottom: 16 }}>
+      <div className="task-title" style={{ marginBottom: 10 }}>Generate new content</div>
+      <div style={{ display: "flex", gap: 12 }}>
+        <div style={{ flex: 1 }}>
+          <Field label="Campaign (optional)">
+            <select value={campaignId} onChange={e => setCampaignId(e.target.value)}>
+              <option value="">No campaign — standalone</option>
+              {campaigns.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </Field>
+        </div>
+        <div style={{ flex: 1 }}>
+          <Field label="Type">
+            <select value={type} onChange={e => setType(e.target.value)}>
+              <option value="email">Email</option>
+              <option value="linkedin_post">LinkedIn post</option>
+              <option value="facebook_post">Facebook post</option>
+            </select>
+          </Field>
+        </div>
+      </div>
+      {type === "email" && (
+        <Field label="Target audience" hint="Which tier's list this email will send to — resolved to the real Zoho list server-side.">
+          <select value={targetTier} onChange={e => setTargetTier(e.target.value)}>
+            <option value="">Choose a tier…</option>
+            {CONTENT_TARGET_TIERS.map(g => (
+              <optgroup key={g.group} label={g.group}>
+                {g.tiers.map(t => <option key={t} value={t}>{t}</option>)}
+              </optgroup>
+            ))}
+          </select>
+        </Field>
+      )}
+      <Field label="Brief / topic">
+        <textarea rows={3} value={brief} onChange={e => setBrief(e.target.value)} style={{ width: "100%", resize: "vertical" }}
+          placeholder="What should this piece be about? e.g. 'Re-engage leads who completed the assessment 60+ days ago but haven't booked a call.'" />
+      </Field>
+      {error && <div style={{ fontSize: 12, color: "var(--coral)", marginBottom: 8 }}>{error}</div>}
+      {lastResult && <div style={{ fontSize: 12, color: "var(--green)", marginBottom: 8 }}>Drafted — check the approval queue below.</div>}
+      <button type="submit" className="btn btn-gold btn-sm" disabled={busy}>
+        {busy ? <Loader2 size={13} className="spin" /> : <Sparkles size={13} />} Generate draft
+      </button>
+    </form>
+  );
+}
+
+function MarketingContentCard({ item, campaigns, onApprove }) {
+  const campaign = campaigns.find(c => c.id === item.campaignId);
+  const [editing, setEditing] = useState(false);
+  const [subject, setSubject] = useState(item.subject);
+  const [body, setBody] = useState(item.body);
+  const [targetTier, setTargetTier] = useState(item.targetTier || "");
+  const [scheduledFor, setScheduledFor] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [result, setResult] = useState(null);
+
+  async function handle(action) {
+    setBusy(true); setError(""); setResult(null);
+    const res = await onApprove(
+      item.id, action,
+      editing ? { subject, body } : undefined,
+      { targetTier: item.type === "email" ? targetTier : undefined, scheduledFor: scheduledFor || undefined }
+    );
+    setBusy(false);
+    if (!res.ok) { setError(res.error); return; }
+    setResult(res);
+  }
+
+  const typeIcon = item.type === "linkedin_post" ? <Linkedin size={13} /> : item.type === "facebook_post" ? <Facebook size={13} /> : <Mail size={13} />;
+
+  return (
+    <div className="card" style={{ padding: 14, marginBottom: 10, borderLeft: "3px solid var(--gold)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <Pill tone="gold">{typeIcon} {CONTENT_TYPE_LABELS[item.type] || item.type}</Pill>
+          {campaign && <span style={{ fontSize: 12, color: "var(--slate)" }}>{campaign.name}</span>}
+        </div>
+        <span style={{ fontSize: 11, color: "var(--slate)" }}>{timeAgo(item.createdAt)}</span>
+      </div>
+
+      {editing ? (
+        <>
+          {item.type === "email" && <Field label="Subject"><input value={subject} onChange={e => setSubject(e.target.value)} /></Field>}
+          <Field label="Body"><textarea rows={7} value={body} onChange={e => setBody(e.target.value)} style={{ width: "100%", resize: "vertical" }} /></Field>
+        </>
+      ) : (
+        <>
+          {item.type === "email" && <div className="task-title" style={{ marginBottom: 4 }}>{item.subject}</div>}
+          <div style={{ fontSize: 12.5, color: "var(--slate)", whiteSpace: "pre-wrap" }}>{item.body}</div>
+        </>
+      )}
+
+      {item.type === "email" && (
+        <div style={{ marginTop: 10 }}>
+          <Field label="Target tier (required to send)">
+            <select value={targetTier} onChange={e => setTargetTier(e.target.value)}>
+              <option value="">Choose a tier…</option>
+              {CONTENT_TARGET_TIERS.map(g => (
+                <optgroup key={g.group} label={g.group}>
+                  {g.tiers.map(t => <option key={t} value={t}>{t}</option>)}
+                </optgroup>
+              ))}
+            </select>
+          </Field>
+          <Field label="Schedule for (optional — leave blank to send immediately on approval)">
+            <input type="datetime-local" value={scheduledFor} onChange={e => setScheduledFor(e.target.value)} />
+          </Field>
+        </div>
+      )}
+
+      {error && <div style={{ fontSize: 12, color: "var(--coral)", marginTop: 8 }}>{error}</div>}
+
+      {result && result.postLink && (
+        <div style={{ fontSize: 12, color: "var(--ink)", background: "var(--cloud-dim)", padding: 10, borderRadius: 8, marginTop: 8 }}>
+          <div style={{ marginBottom: 6 }}>{result.note}</div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => navigator.clipboard?.writeText(result.body || body)}>
+              <Copy size={12} /> Copy text
+            </button>
+            <a className="btn btn-ghost btn-sm" href={result.postLink} target="_blank" rel="noopener noreferrer"><Link2 size={12} /> Open composer</a>
+          </div>
+        </div>
+      )}
+      {result && result.action === "sent" && <div style={{ fontSize: 12, color: "var(--green)", marginTop: 8 }}>Sent via Zoho — campaign key {result.campaignKey}</div>}
+      {result && result.action === "scheduled" && <div style={{ fontSize: 12, color: "var(--green)", marginTop: 8 }}>Scheduled via Zoho — campaign key {result.campaignKey}</div>}
+      {result && result.note && !result.postLink && <div style={{ fontSize: 12, color: "var(--gold)", marginTop: 8 }}>{result.note}</div>}
+
+      <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+        <button className="btn btn-gold btn-sm" disabled={busy} onClick={() => handle("approve")}>
+          {busy ? <Loader2 size={13} className="spin" /> : <Check size={13} />} Approve{item.type === "email" ? (scheduledFor ? " & schedule" : " & send") : ""}
+        </button>
+        <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => setEditing(e => !e)}>
+          {editing ? "Cancel edit" : "Edit first"}
+        </button>
+        <button className="btn btn-danger btn-sm" disabled={busy} onClick={() => handle("reject")}>
+          <X size={13} /> Reject
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ContentStudioView({ marketingHub, onCreateCampaign, onGenerate, onApprove }) {
+  const [showNewCampaign, setShowNewCampaign] = useState(false);
+  const campaigns = marketingHub.campaigns || [];
+  const items = marketingHub.contentItems || [];
+
+  const pending = items.filter(i => i.status === "pending_approval");
+  const others = items.filter(i => i.status !== "pending_approval" && i.status !== "rejected");
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+        <div className="section-title" style={{ marginBottom: 0 }}>Campaigns</div>
+        {!showNewCampaign && (
+          <button className="btn btn-gold btn-sm" onClick={() => setShowNewCampaign(true)}><Plus size={13} /> New campaign</button>
+        )}
+      </div>
+
+      {showNewCampaign && <NewCampaignForm onCreate={onCreateCampaign} onDone={() => setShowNewCampaign(false)} />}
+
+      {campaigns.length === 0 ? (
+        <div className="empty-state" style={{ padding: 20, marginBottom: 20 }}>No campaigns yet — create one, or generate standalone content below.</div>
+      ) : (
+        <div className="card" style={{ padding: 4, marginBottom: 20 }}>
+          {campaigns.map(c => (
+            <div key={c.id} className="activity-row" style={{ padding: "10px 12px" }}>
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 13 }}>{c.name}</div>
+                {c.goal && <div style={{ fontSize: 12, color: "var(--slate)" }}>{c.goal}</div>}
+              </div>
+              <Pill tone={c.status === "active" ? "green" : "slate"}>{c.status}</Pill>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="section-title">Generate content</div>
+      <GenerateContentForm campaigns={campaigns} onGenerate={onGenerate} />
+
+      <div className="section-title">Pending approval ({pending.length})</div>
+      {pending.length === 0 ? (
+        <div className="empty-state" style={{ padding: 20, marginBottom: 20 }}>Nothing waiting on you right now.</div>
+      ) : (
+        <div style={{ marginBottom: 20 }}>
+          {pending.map(item => <MarketingContentCard key={item.id} item={item} campaigns={campaigns} onApprove={onApprove} />)}
+        </div>
+      )}
+
+      {others.length > 0 && (
+        <>
+          <div className="section-title">Approved, scheduled &amp; sent</div>
+          <div className="card" style={{ padding: 4 }}>
+            {others.map(item => (
+              <div key={item.id} className="activity-row" style={{ padding: "10px 12px" }}>
+                <div>
+                  <div style={{ fontSize: 13 }}>{item.subject || item.body.slice(0, 60) + (item.body.length > 60 ? "…" : "")}</div>
+                  <div style={{ fontSize: 11, color: "var(--slate)" }}>{CONTENT_TYPE_LABELS[item.type] || item.type}{item.targetTier ? ` — ${item.targetTier}` : ""}</div>
+                </div>
+                <Pill tone={item.status === "sent" ? "green" : item.status === "scheduled" ? "navy" : "slate"}>{item.status}</Pill>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ---------- Import ----------
 
-function ImportView({ sourceData, onRefresh, apiConfigured, findClientByEmail, onAdd, onAddAll }) {
+function ImportView({ sourceData, onRefresh, apiConfigured, findClientByEmail, onAdd, onAddAll, activityLog }) {
   return (
     <>
       {!apiConfigured && (
@@ -1192,46 +1801,86 @@ function ImportView({ sourceData, onRefresh, apiConfigured, findClientByEmail, o
       )}
       {SOURCES.map(s => {
         const sd = sourceData[s.key] || { status: "unconfigured", items: [] };
-        const newCount = sd.items.filter(i => !findClientByEmail(i.email)).length;
+        const newItems = sd.items.filter(i => !findClientByEmail(i.email));
+        const addedItems = sd.items.filter(i => findClientByEmail(i.email));
+        // "Actions Taken" reuses the same activity log the rest of the CRM
+        // already writes to (addFromCandidate logs "Added X from..." /
+        // "Merged X data into..." on every action, and the Zoho/Beehiiv sync
+        // job logs its own entries the same way) — filtered here to just
+        // the entries that mention someone currently in this source, so it
+        // works as a per-source history without needing a separate log.
+        const sourceActions = (activityLog || []).filter(a => sd.items.some(i => i.email && a.text.includes(i.email)) || sd.items.some(i => i.name && a.text.includes(i.name)));
         return (
           <div key={s.key} style={{ marginBottom: 26 }}>
             <div className="section-title">
               <span style={{ display: "flex", alignItems: "center", gap: 8 }}><s.icon size={14} /> {s.label} <Pill tone="slate">{s.system}</Pill></span>
-              {sd.status === "live" && newCount > 0 && <button className="btn btn-gold btn-sm" onClick={() => onAddAll(s.key)}><UserPlus size={13} /> Add all new ({newCount})</button>}
+              {sd.status === "live" && newItems.length > 0 && <button className="btn btn-gold btn-sm" onClick={() => onAddAll(s.key)}><UserPlus size={13} /> Add all new ({newItems.length})</button>}
             </div>
-            <div className="card" style={{ padding: sd.items.length ? 8 : 16 }}>
-              {sd.status === "unconfigured" && <div style={{ padding: 16, fontSize: 12.5, color: "var(--slate)" }}>Not connected — expects <code>GET {"{base}"}{s.path}</code>.</div>}
-              {sd.status === "checking" && <div style={{ padding: 16, fontSize: 12.5, color: "var(--slate)", display: "flex", alignItems: "center", gap: 8 }}><Loader2 size={14} className="spin" /> Checking…</div>}
-              {sd.status === "error" && <div style={{ padding: 16, fontSize: 12.5, color: "var(--coral)" }}>Couldn't reach <code>{s.path}</code> at that base URL yet.</div>}
-              {sd.status === "live" && sd.items.length === 0 && <div style={{ padding: 16, fontSize: 12.5, color: "var(--slate)" }}>Connected — nothing new to pull in right now.</div>}
-              {sd.status === "live" && sd.items.length > 0 && (
-                <table className="ctable">
-                  <thead><tr><th>Name</th><th>Email</th><th>Detail</th><th></th></tr></thead>
-                  <tbody>
-                    {sd.items.map((item, idx) => {
-                      const existing = findClientByEmail(item.email);
-                      const detail = s.key === "assessments"
-                        ? [item.tier, item.overallScore != null ? `${item.overallScore}%` : null].filter(Boolean).join(" · ")
-                        : (item.campaignName || item.platform || "");
-                      return (
-                        <tr key={item.id || item.email || idx}>
-                          <td className="client-name" style={{ fontSize: 13.5 }}>{item.name || "—"}</td>
-                          <td style={{ fontSize: 12.5 }}>{item.email || "—"}</td>
-                          <td style={{ fontSize: 12.5, color: "var(--slate)" }}>{detail || "—"}</td>
-                          <td style={{ textAlign: "right" }}>
-                            {existing ? (
-                              <button className="btn btn-ghost btn-sm" onClick={() => onAdd(item, s.key)}><Check size={12} /> Merge into {existing.name || "client"}</button>
-                            ) : (
-                              <button className="btn btn-gold btn-sm" onClick={() => onAdd(item, s.key)}><UserPlus size={12} /> Add as client</button>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              )}
-            </div>
+
+            {sd.status === "unconfigured" && <div className="card" style={{ padding: 16, fontSize: 12.5, color: "var(--slate)" }}>Not connected — expects <code>GET {"{base}"}{s.path}</code>.</div>}
+            {sd.status === "checking" && <div className="card" style={{ padding: 16, fontSize: 12.5, color: "var(--slate)", display: "flex", alignItems: "center", gap: 8 }}><Loader2 size={14} className="spin" /> Checking…</div>}
+            {sd.status === "error" && <div className="card" style={{ padding: 16, fontSize: 12.5, color: "var(--coral)" }}>Couldn't reach <code>{s.path}</code> at that base URL yet.</div>}
+
+            {sd.status === "live" && (
+              <>
+                <CollapsibleGroup label="Imported" tone="navy" count={newItems.length} defaultOpen={newItems.length > 0}>
+                  {newItems.length === 0 ? <div className="empty-state" style={{ padding: 16 }}>Nothing new to pull in right now.</div> : (
+                    <table className="ctable">
+                      <thead><tr><th>Name</th><th>Email</th><th>Detail</th><th></th></tr></thead>
+                      <tbody>
+                        {newItems.map((item, idx) => {
+                          const detail = s.key === "assessments"
+                            ? [item.tier, item.overallScore != null ? `${item.overallScore}%` : null].filter(Boolean).join(" · ")
+                            : (item.campaignName || item.platform || "");
+                          return (
+                            <tr key={item.id || item.email || idx}>
+                              <td className="client-name" style={{ fontSize: 13.5 }}>{item.name || "—"}</td>
+                              <td style={{ fontSize: 12.5 }}>{item.email || "—"}</td>
+                              <td style={{ fontSize: 12.5, color: "var(--slate)" }}>{detail || "—"}</td>
+                              <td style={{ textAlign: "right" }}>
+                                <button className="btn btn-gold btn-sm" onClick={() => onAdd(item, s.key)}><UserPlus size={12} /> Add as client</button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  )}
+                </CollapsibleGroup>
+
+                <CollapsibleGroup label="Added" tone="green" count={addedItems.length} defaultOpen={false}>
+                  {addedItems.length === 0 ? <div className="empty-state" style={{ padding: 16 }}>None of these have been added as clients yet.</div> : (
+                    <table className="ctable">
+                      <thead><tr><th>Name</th><th>Email</th><th>Detail</th><th></th></tr></thead>
+                      <tbody>
+                        {addedItems.map((item, idx) => {
+                          const existing = findClientByEmail(item.email);
+                          const detail = s.key === "assessments"
+                            ? [item.tier, item.overallScore != null ? `${item.overallScore}%` : null].filter(Boolean).join(" · ")
+                            : (item.campaignName || item.platform || "");
+                          return (
+                            <tr key={item.id || item.email || idx}>
+                              <td className="client-name" style={{ fontSize: 13.5 }}>{item.name || "—"}</td>
+                              <td style={{ fontSize: 12.5 }}>{item.email || "—"}</td>
+                              <td style={{ fontSize: 12.5, color: "var(--slate)" }}>{detail || "—"}</td>
+                              <td style={{ textAlign: "right" }}>
+                                <button className="btn btn-ghost btn-sm" onClick={() => onAdd(item, s.key)}><Check size={12} /> Merge into {existing?.name || "client"}</button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  )}
+                </CollapsibleGroup>
+
+                <CollapsibleGroup label="Actions taken" tone="slate" count={sourceActions.length} defaultOpen={false}>
+                  {sourceActions.length === 0 ? <div className="empty-state" style={{ padding: 16 }}>No recorded actions for this source yet.</div> : sourceActions.map(a => (
+                    <div className="activity-row" key={a.id}><span className="activity-dot" /><span>{a.text}</span><span className="activity-time">{timeAgo(a.ts)}</span></div>
+                  ))}
+                </CollapsibleGroup>
+              </>
+            )}
           </div>
         );
       })}
@@ -1241,8 +1890,15 @@ function ImportView({ sourceData, onRefresh, apiConfigured, findClientByEmail, o
 
 // ---------- Settings ----------
 
-function SettingsView({ zohoStatus, zohoError, onTest, team, onAddTeamMember, onRemoveTeamMember }) {
+function SettingsView({ zohoStatus, zohoError, onTest, team, onAddTeamMember, onRemoveTeamMember, emailTemplates, onAddTemplate, onRemoveTemplate, onPatchTemplate }) {
   const [name, setName] = useState(""); const [email, setEmail] = useState(""); const [role, setRole] = useState("");
+  const [templateName, setTemplateName] = useState(""); const [templateBody, setTemplateBody] = useState("");
+  function submitTemplate(e) {
+    e.preventDefault();
+    if (!templateName.trim() || !templateBody.trim()) return;
+    onAddTemplate({ name: templateName.trim(), body: templateBody.trim() });
+    setTemplateName(""); setTemplateBody("");
+  }
   function submitTeam(e) {
     e.preventDefault();
     if (!name.trim()) return;
@@ -1270,6 +1926,26 @@ function SettingsView({ zohoStatus, zohoError, onTest, team, onAddTeamMember, on
             <div className="task-meta">{m.role}{m.role && m.email ? " · " : ""}{m.email}</div>
           </div>
           <button className="btn-danger btn btn-sm" onClick={() => onRemoveTeamMember(m.id)}><Trash2 size={13} /></button>
+        </div>
+      ))}
+
+      <div className="section-title" style={{ marginTop: 26 }}>Email templates</div>
+      <p style={{ fontSize: 12.5, color: "var(--slate)", marginTop: 0 }}>
+        These are inspiration for the AI drafting agent, not fill-in-the-blank text — when a client emails in, the agent
+        writes a genuine reply in the spirit of these templates rather than pasting them in verbatim.
+      </p>
+      <form onSubmit={submitTemplate} style={{ marginBottom: 14 }}>
+        <Field label="Template name"><input value={templateName} onChange={e => setTemplateName(e.target.value)} placeholder="e.g. Following up after a strategy call" /></Field>
+        <Field label="Body"><textarea rows={5} value={templateBody} onChange={e => setTemplateBody(e.target.value)} style={{ width: "100%", resize: "vertical" }} placeholder="Hi [First Name], great chatting today..." /></Field>
+        <button className="btn btn-primary btn-sm" type="submit"><Plus size={13} /> Add template</button>
+      </form>
+      {(emailTemplates || []).length === 0 ? <div className="empty-state" style={{ padding: 16 }}>No templates yet.</div> : (emailTemplates || []).map(t => (
+        <div className="task-row" key={t.id} style={{ alignItems: "flex-start" }}>
+          <div style={{ flex: 1 }}>
+            <div className="task-title">{t.name}</div>
+            <div className="task-meta" style={{ whiteSpace: "pre-wrap" }}>{t.body}</div>
+          </div>
+          <button className="btn-danger btn btn-sm" onClick={() => onRemoveTemplate(t.id)}><Trash2 size={13} /></button>
         </div>
       ))}
 
@@ -1311,7 +1987,161 @@ function SettingsView({ zohoStatus, zohoError, onTest, team, onAddTeamMember, on
 
 // ---------- drawer tabs ----------
 
-function ProfileTab({ client, onPatch, onDelete }) {
+// Which of the 8 Zoho Campaigns tier lists a client is in, derived from
+// their assessment path + tier rather than a separately-stored field —
+// this always stays correct automatically as their assessment data
+// changes, with no extra sync step needed.
+function zohoListName(client) {
+  const a = client.assessment;
+  if (!a || !a.completed || !a.tier) return null;
+  const prefix = a.path === "financial" ? "FP" : "General";
+  return `${prefix} - ${a.tier}`;
+}
+
+function engagementEventMeta(type) {
+  if (type === "click") return { label: "Email clicks", tone: "gold" };
+  if (type === "open") return { label: "Email opens", tone: "navy" };
+  if (type === "email_enrolled") return { label: "Nurture emails", tone: "green" };
+  if (type === "email_received") return { label: "Emails from them", tone: "gold" };
+  if (type === "email_sent") return { label: "Emails we sent", tone: "navy" };
+  return { label: "Other activity", tone: "slate" };
+}
+
+// Combines two different data sources into one unified, grouped timeline:
+//  1. Global activityLog entries that mention this client (same
+//     name/email-matching heuristic used in the Import tab's "Actions
+//     taken" section — there's no structured per-client link on log
+//     entries, so text matching is what we have) — covers tasks, billing,
+//     assessment completions, imports/merges.
+//  2. client.engagementHistory — real per-contact email open/click events,
+//     synced in from Zoho's Campaigns API (see lib/sync.js), plus a
+//     guaranteed "enrolled in nurture list" event logged directly by
+//     api/assessments/submit.js.
+// NOTE: open/click tracking is confirmed working for regular Zoho
+// Campaigns (CPA outreach, etc.) — it is NOT yet confirmed to work for the
+// new tier-based nurture emails, since those send via Zoho Workflows, a
+// different feature from Campaigns. Until that's verified, expect
+// "Nurture emails" (enrollment) to be reliable, but "Email opens/clicks"
+// on nurture emails specifically may not populate.
+function ClientActivityTab({ client, activityLog }) {
+  const relevantLog = useMemo(() => {
+    if (!client.name && !client.email) return [];
+    return (activityLog || []).filter(a => (client.email && a.text.includes(client.email)) || (client.name && a.text.includes(client.name)));
+  }, [activityLog, client.name, client.email]);
+
+  const combined = useMemo(() => {
+    const fromLog = relevantLog.map(a => ({ id: a.id, ts: a.ts, text: a.text, ...categorizeActivity(a.text) }));
+    const fromEngagement = (client.engagementHistory || []).map((e, i) => ({
+      id: `eng_${i}_${e.ts}`, ts: e.ts,
+      text: e.type === "email_enrolled" ? `Enrolled in ${e.campaignName}`
+        : e.type === "email_received" ? `Emailed us: "${e.campaignName}"`
+        : e.type === "email_sent" ? `We emailed them: "${e.campaignName}"`
+        : `${e.type === "click" ? "Clicked" : "Opened"} "${e.campaignName}"`,
+      // Deep link straight to the message in Gmail — only email events carry
+      // a real Gmail messageId (campaign click/open events don't have one).
+      // Uses account slot /u/0/ — if Tracy's elevatemy.ai account isn't the
+      // first signed-in Google account in her browser, this may land on the
+      // wrong account's inbox; there's no way to target a specific account
+      // by email address in this URL format, only by slot position.
+      gmailLink: (e.messageId && (e.type === "email_received" || e.type === "email_sent"))
+        ? `https://mail.google.com/mail/u/0/#all/${e.messageId}`
+        : null,
+      ...engagementEventMeta(e.type),
+    }));
+    return [...fromLog, ...fromEngagement].sort((a, b) => (b.ts || "").localeCompare(a.ts || ""));
+  }, [relevantLog, client.engagementHistory]);
+
+  const groups = useMemo(() => {
+    const map = new Map();
+    combined.forEach(item => {
+      if (!map.has(item.label)) map.set(item.label, { label: item.label, tone: item.tone, items: [] });
+      map.get(item.label).items.push(item);
+    });
+    return Array.from(map.values());
+  }, [combined]);
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 14 }}>
+        Everything tied to this client — task completions, billing, assessment activity, imports, and real email opens/clicks synced from Zoho.
+      </div>
+      {groups.length === 0 ? (
+        <div className="empty-state" style={{ padding: 20 }}>No activity recorded for this client yet.</div>
+      ) : groups.map(g => (
+        <CollapsibleGroup key={g.label} label={g.label} tone={g.tone} count={g.items.length}>
+          {g.items.map(item => (
+            <div className="activity-row" key={item.id}>
+              <span className="activity-dot" />
+              {item.gmailLink ? (
+                <a href={item.gmailLink} target="_blank" rel="noopener noreferrer" title="Open in Gmail">{item.text}</a>
+              ) : (
+                <span>{item.text}</span>
+              )}
+              <span className="activity-time">{timeAgo(item.ts)}</span>
+            </div>
+          ))}
+        </CollapsibleGroup>
+      ))}
+    </div>
+  );
+}
+
+// Compose + send modal — calls the new /api/gmail/send endpoint, which
+// sends through Gmail for real and logs the send against this client's
+// record. Both tracy@ and matt@elevatemy.ai are selectable senders since
+// matt@ is a "send mail as" alias on the same underlying Gmail account,
+// not a separate connection.
+function EmailComposer({ client, onCancel, onSent }) {
+  const [from, setFrom] = useState("tracy@elevatemy.ai");
+  const [subject, setSubject] = useState("");
+  const [body, setBody] = useState("");
+  const [status, setStatus] = useState("idle"); // idle | sending | error
+  const [error, setError] = useState("");
+
+  async function send() {
+    if (!subject.trim() || !body.trim()) return;
+    setStatus("sending"); setError("");
+    try {
+      const res = await fetch("/api/gmail/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ to: client.email, from, subject: subject.trim(), body: body.trim(), clientId: client.id }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || "Send failed");
+      onSent();
+    } catch (e) {
+      setStatus("error");
+      setError(e.message);
+    }
+  }
+
+  return (
+    <div>
+      <div className="display" style={{ fontSize: 18, marginBottom: 16 }}>Email {clientDisplayName(client)}</div>
+      <div className="field-row">
+        <Field label="To"><input value={client.email} disabled /></Field>
+        <Field label="From">
+          <select value={from} onChange={e => setFrom(e.target.value)}>
+            <option value="tracy@elevatemy.ai">tracy@elevatemy.ai</option>
+            <option value="matt@elevatemy.ai">matt@elevatemy.ai</option>
+          </select>
+        </Field>
+      </div>
+      <Field label="Subject"><input autoFocus value={subject} onChange={e => setSubject(e.target.value)} /></Field>
+      <Field label="Message"><textarea rows={8} value={body} onChange={e => setBody(e.target.value)} style={{ width: "100%", resize: "vertical" }} /></Field>
+      {status === "error" && <div style={{ fontSize: 12, color: "var(--coral)", marginBottom: 8 }}>{error}</div>}
+      <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+        <button className="btn btn-gold" disabled={status === "sending" || !subject.trim() || !body.trim()} onClick={send}>
+          {status === "sending" ? <><Loader2 size={14} className="spin" /> Sending…</> : <><Send size={14} /> Send</>}
+        </button>
+        <button type="button" className="btn btn-ghost" onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+function ProfileTab({ client, onPatch, onDelete, onComposeEmail }) {
   function patchName(patch) {
     const firstName = "firstName" in patch ? patch.firstName : (client.firstName || "");
     const lastName = "lastName" in patch ? patch.lastName : (client.lastName || "");
@@ -1324,6 +2154,7 @@ function ProfileTab({ client, onPatch, onDelete }) {
         <Field label="Last name"><input value={client.lastName || ""} onChange={e => patchName({ lastName: e.target.value })} /></Field>
       </div>
       <Field label="Company"><input value={client.company} onChange={e => onPatch({ company: e.target.value })} /></Field>
+      <Field label="Business website"><input value={client.website || ""} onChange={e => onPatch({ website: e.target.value })} placeholder="https://theirbusiness.com" /></Field>
       <div className="field-row">
         <Field label="Email"><input value={client.email} onChange={e => onPatch({ email: e.target.value })} /></Field>
         <Field label="Phone"><input value={client.phone} onChange={e => onPatch({ phone: e.target.value })} /></Field>
@@ -1331,6 +2162,35 @@ function ProfileTab({ client, onPatch, onDelete }) {
       <Field label="Status">
         <select value={client.status} onChange={e => onPatch({ status: e.target.value })}><option value="lead">Lead</option><option value="active">Active</option><option value="inactive">Inactive</option></select>
       </Field>
+
+      <div className="section-title" style={{ marginTop: 20, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <span>Links</span>
+        {client.email && <button className="btn btn-gold btn-sm" onClick={onComposeEmail}><Mail size={13} /> Send email</button>}
+      </div>
+      <div className="card" style={{ padding: 12 }}>
+        {(() => {
+          const list = zohoListName(client);
+          const links = [
+            client.website && { label: "Business website", href: client.website },
+            client.dashboard?.vercelUrl && { label: "Client site (built for them)", href: client.dashboard.vercelUrl },
+            client.dashboard?.githubUrl && { label: "GitHub repo", href: client.dashboard.githubUrl },
+          ].filter(Boolean);
+          return (
+            <>
+              {links.length === 0 ? <div style={{ fontSize: 12.5, color: "var(--slate)" }}>No links yet — add a business website above, or a client-site URL in the Dashboard tab.</div> : links.map(l => (
+                <div key={l.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0" }}>
+                  <span style={{ fontSize: 12.5 }}>{l.label}</span>
+                  <a href={l.href} target="_blank" rel="noreferrer" className="btn btn-ghost btn-sm"><ExternalLink size={12} /> Open</a>
+                </div>
+              ))}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderTop: links.length ? "1px solid var(--slate-line)" : "none", marginTop: links.length ? 6 : 0 }}>
+                <span style={{ fontSize: 12.5 }}>Zoho nurture list</span>
+                {list ? <Pill tone="navy">{list}</Pill> : <span style={{ fontSize: 12, color: "var(--slate)" }}>Not on a list — no completed assessment yet</span>}
+              </div>
+            </>
+          );
+        })()}
+      </div>
       <div style={{ marginTop: 20, borderTop: "1px solid var(--slate-line)", paddingTop: 16, display: "flex", gap: 8 }}>
         <button className="btn btn-ghost btn-sm" onClick={() => onPatch({ hidden: !client.hidden })}>
           {client.hidden ? <><Eye size={13} /> Unhide client</> : <><EyeOff size={13} /> Hide from main list</>}
@@ -1626,8 +2486,9 @@ function BillingTab({ client, onAdd, onPatch, onRemove, onPatchClient }) {
 
 function ClientTasksTab({ client, team, onAdd, onToggle, onRemove, onPatch }) {
   const [title, setTitle] = useState(""); const [owner, setOwner] = useState("client"); const [due, setDue] = useState(""); const [assignedTo, setAssignedTo] = useState("");
+  const [blockStart, setBlockStart] = useState(""); const [blockEnd, setBlockEnd] = useState("");
   const tasks = client.tasks || [];
-  function submit(e) { e.preventDefault(); if (!title.trim()) return; onAdd({ title: title.trim(), owner, dueDate: due, assignedTo: assignedTo || null }); setTitle(""); setDue(""); setAssignedTo(""); }
+  function submit(e) { e.preventDefault(); if (!title.trim()) return; onAdd({ title: title.trim(), owner, dueDate: due, assignedTo: assignedTo || null, blockStart: blockStart || "", blockEnd: blockEnd || "" }); setTitle(""); setDue(""); setAssignedTo(""); setBlockStart(""); setBlockEnd(""); }
   return (
     <div>
       <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 14 }}>Track what keeps this client's campaign moving — tasks the client owes us, and tasks we owe the client.</div>
@@ -1636,6 +2497,10 @@ function ClientTasksTab({ client, team, onAdd, onToggle, onRemove, onPatch }) {
         <div className="field-row">
           <Field label="Owed by"><select value={owner} onChange={e => setOwner(e.target.value)}><option value="client">Client</option><option value="team">Us</option></select></Field>
           <Field label="Due date"><input type="date" value={due} onChange={e => setDue(e.target.value)} /></Field>
+        </div>
+        <div className="field-row">
+          <Field label="Work on it starting"><input type="date" value={blockStart} onChange={e => setBlockStart(e.target.value)} /></Field>
+          <Field label="Work on it by (block end)"><input type="date" value={blockEnd} onChange={e => setBlockEnd(e.target.value)} /></Field>
         </div>
         <Field label="Assigned to">
           <select value={assignedTo} onChange={e => setAssignedTo(e.target.value)}>
@@ -1668,6 +2533,7 @@ function ClientTasksTab({ client, team, onAdd, onToggle, onRemove, onPatch }) {
                 {(team || []).map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
               </select>
               {t.dueDate && <span>· <Calendar size={11} /> {fmtDate(t.dueDate)}</span>}
+              {t.blockStart && <span>· <Clock size={11} /> work {fmtDate(t.blockStart)}–{fmtDate(t.blockEnd)}</span>}
             </div>
           </div>
           {isOverdue(t) && <Pill tone="coral">overdue</Pill>}
