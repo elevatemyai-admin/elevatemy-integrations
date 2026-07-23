@@ -6,8 +6,9 @@
 const crypto = require("crypto");
 const { getCache, setCache } = require("../../lib/store");
 const { fetchZohoCampaigns, fetchZohoLeadsBySource, fetchZohoCampaignClickers, fetchZohoCampaignOpeners } = require("../../lib/zoho");
-const { fetchHubspotAssessments } = require("../../lib/hubspot");
 const { fetchBeehiivSubscribers } = require("../../lib/beehiiv");
+const { fetchRecentIncomingEmails, fetchRecentSentEmails } = require("../../lib/gmail");
+const { draftReply } = require("../../lib/claude");
 
 // Same key api/crm/data.js reads/writes — kept as a literal string in both
 // places rather than a shared import, since api/*.js files are deployed as
@@ -28,7 +29,10 @@ module.exports = async (req, res) => {
     ["cache:socialLeads", () => fetchZohoLeadsBySource(process.env.ZOHO_SOCIAL_LEAD_SOURCE || "Social Media")],
     ["cache:campaignClickers", fetchZohoCampaignClickers],
     ["cache:campaignOpeners", fetchZohoCampaignOpeners],
-    ["cache:assessments", fetchHubspotAssessments],
+    // cache:assessments (HubSpot) removed — the one-time historical import
+    // is done, and all new assessments now come in directly through the
+    // CRM's own api/assessments/submit.js, not HubSpot. This job was just
+    // failing every run with an auth error for data no longer needed here.
     ["cache:subscribers", fetchBeehiivSubscribers],
   ];
 
@@ -38,7 +42,7 @@ module.exports = async (req, res) => {
     try {
       items = await fn();
     } catch (e) {
-      // The upstream fetch (Zoho/HubSpot/Beehiiv) itself failed.
+      // The upstream fetch (Zoho/Beehiiv) itself failed.
       results[key] = { ok: false, stage: "fetch", error: e.message };
       console.error(`[sync] ${key} fetch failed:`, e.message);
       continue;
@@ -119,6 +123,9 @@ module.exports = async (req, res) => {
         assessment: { path: "general", completed: false, date: "", categories: {}, overallScore: null, tier: "", grade: "", topOpportunity: "", deliveryModel: "", consultationBooked: false, consultationDate: "", notes: "" },
         newsletter: { subscribed: false, link: "" },
         zoho: { link: entry.campaignLink || "", status: targetStatus, lastSent: (entry.openedAt || entry.clickedAt || "").slice(0, 10) },
+        // Real per-contact click/open history, not just a single "last
+        // sent" date — powers the client detail "Recent activity" tab.
+        engagementHistory: (entry.events || []).slice(-100),
         social: [],
         dashboard: { vercelUrl: "", githubUrl: "", lastInterview: "", notes: "" },
         tasks: [],
@@ -146,7 +153,17 @@ module.exports = async (req, res) => {
     const nameFixNeeded = isZohoCreated && (entry.firstName || entry.lastName) &&
       (existing.firstName !== (entry.firstName || "") || existing.lastName !== (entry.lastName || ""));
 
-    if (targetTier > currentTier || nextTags !== existingTags || nameFixNeeded) {
+    // Engagement history should grow every time someone opens/clicks again,
+    // independent of whether that changes their status tier — a returning
+    // Opportunity clicking a 3rd campaign is still real activity worth
+    // showing on their record, even though their tier doesn't move.
+    const existingHistory = existing.engagementHistory || [];
+    const incomingEvents = entry.events || [];
+    const seen = new Set(existingHistory.map(e => `${e.type}|${e.campaignName}|${e.ts}`));
+    const newEvents = incomingEvents.filter(e => !seen.has(`${e.type}|${e.campaignName}|${e.ts}`));
+    const nextHistory = newEvents.length ? [...existingHistory, ...newEvents].slice(-100) : existingHistory;
+
+    if (targetTier > currentTier || nextTags !== existingTags || nameFixNeeded || newEvents.length) {
       clients[idx] = {
         ...existing,
         status: targetTier > currentTier ? targetStatus : existing.status,
@@ -154,6 +171,7 @@ module.exports = async (req, res) => {
         firstName: nameFixNeeded ? (entry.firstName || "") : existing.firstName,
         lastName: nameFixNeeded ? (entry.lastName || "") : existing.lastName,
         name: nameFixNeeded ? (entry.name || [entry.firstName, entry.lastName].filter(Boolean).join(" ")) : existing.name,
+        engagementHistory: nextHistory,
         zoho: { ...existing.zoho, status: targetTier > currentTier ? targetStatus : existing.zoho?.status, link: existing.zoho?.link || entry.campaignLink || "", lastSent: (entry.openedAt || entry.clickedAt || "").slice(0, 10) || existing.zoho?.lastSent || "" },
       };
       if (targetTier > currentTier) {
@@ -171,7 +189,7 @@ module.exports = async (req, res) => {
     const clickers = results["cache:campaignClickers"]?.ok ? await getCache("cache:campaignClickers", []) : [];
     const openers = results["cache:campaignOpeners"]?.ok ? await getCache("cache:campaignOpeners", []) : [];
 
-    const crmData = (await getCache(CRM_DATA_KEY, null)) || { clients: [], marketingCampaigns: [], activityLog: [], settings: {} };
+    const crmData = (await getCache(CRM_DATA_KEY, null)) || { clients: [], marketingCampaigns: [], activityLog: [], settings: {}, emailTemplates: [], pendingEmails: [] };
     let clients = crmData.clients || [];
     const activityNotes = [];
 
@@ -228,7 +246,7 @@ module.exports = async (req, res) => {
   try {
     const subscribers = results["cache:subscribers"]?.ok ? await getCache("cache:subscribers", []) : [];
     if (subscribers.length) {
-      const crmData = (await getCache(CRM_DATA_KEY, null)) || { clients: [], marketingCampaigns: [], activityLog: [], settings: {} };
+      const crmData = (await getCache(CRM_DATA_KEY, null)) || { clients: [], marketingCampaigns: [], activityLog: [], settings: {}, emailTemplates: [], pendingEmails: [] };
       let clients = crmData.clients || [];
       let enrichedCount = 0;
       let createdCount = 0;
@@ -264,6 +282,7 @@ module.exports = async (req, res) => {
             assessment: { path: "general", completed: false, date: "", categories: {}, overallScore: null, tier: "", grade: "", topOpportunity: "", deliveryModel: "", consultationBooked: false, consultationDate: "", notes: "" },
             newsletter: newsletterFields,
             zoho: { link: "", status: "not started", lastSent: "" },
+            engagementHistory: [],
             social: [],
             dashboard: { vercelUrl: "", githubUrl: "", lastInterview: "", notes: "" },
             tasks: [],
@@ -309,6 +328,191 @@ module.exports = async (req, res) => {
   } catch (e) {
     results["crm:beehiivEnrichment"] = { ok: false, error: e.message };
     console.error("[sync] enriching clients with Beehiiv stats failed:", e.message);
+  }
+
+  // Incoming email from known clients — reads Tracy's Gmail inbox (which
+  // also covers matt@elevatemy.ai, a send-as alias on the same mailbox,
+  // not a separate account) and matches senders against existing CRM
+  // clients by email. Only ever reads/logs — never marks emails read,
+  // archives, or modifies anything in the actual inbox.
+  try {
+    const crmData = (await getCache(CRM_DATA_KEY, null)) || { clients: [], marketingCampaigns: [], activityLog: [], settings: {}, emailTemplates: [], pendingEmails: [] };
+    const clients = crmData.clients || [];
+    const settings = crmData.settings || {};
+    // First run ever: look back 7 days rather than the beginning of time,
+    // so a first sync doesn't try to pull someone's entire inbox history.
+    const sinceMs = settings.gmailLastSyncTs || (Date.now() - 7 * 24 * 60 * 60 * 1000);
+
+    const emails = await fetchRecentIncomingEmails(sinceMs);
+
+    // Also pull recent Sent mail so we can tell whether a client has
+    // already been replied to — whether that reply went out through the
+    // CRM's own send/approve buttons, or Tracy replying directly in Gmail.
+    // Without this, the AI would happily draft (and leave sitting in the
+    // approval queue) a reply to a thread a human already answered by hand.
+    // A failure here shouldn't break incoming-email logging — it just means
+    // reply-detection is skipped for this run.
+    let sentEmails = [];
+    try {
+      sentEmails = await fetchRecentSentEmails(sinceMs);
+    } catch (e) {
+      console.warn("[sync] fetching sent mail failed (skipping reply-detection this run):", e.message);
+    }
+
+    // Durable "already handled" ledger — separate from engagementHistory,
+    // which is capped at the last 100 events per client for Activity-tab
+    // display purposes. Without this, a message's dedup record could get
+    // pushed out of that 100-item window by later activity (more emails,
+    // campaign opens/clicks), causing sync to treat an old, already-drafted
+    // or already-rejected message as brand new and draft it again. This set
+    // is the single source of truth for "have we ever considered this
+    // message for drafting" — checked first, before anything else, and
+    // never trimmed by anything other than its own generous cap below.
+    const handledIds = new Set(settings.gmailHandledMessageIds || []);
+
+    const emailActivityNotes = [];
+    const templates = crmData.emailTemplates || [];
+    const newPendingDrafts = [];
+    let matchedCount = 0;
+    let draftedCount = 0;
+    let skippedAlreadyRepliedCount = 0;
+
+    for (const msg of emails) {
+      if (!msg.fromEmail) continue;
+      if (handledIds.has(msg.messageId)) continue; // already handled in a prior run — never reconsider
+
+      const idx = clients.findIndex((c) => (c.email || "").toLowerCase().trim() === msg.fromEmail);
+      if (idx === -1) continue; // not a known client — nothing to log
+
+      const existing = clients[idx];
+      const history = existing.engagementHistory || [];
+      // Dedup by Gmail's own message id — the one truly unique key here,
+      // unlike campaign click/open events which don't have one. This is a
+      // secondary check (handledIds above is now the primary one) — kept
+      // so a message logged before this ledger existed doesn't get
+      // reprocessed the first time it's seen under the new logic.
+      if (history.some((e) => e.messageId === msg.messageId)) {
+        handledIds.add(msg.messageId); // backfill into the durable ledger
+        continue;
+      }
+
+      const event = { type: "email_received", campaignName: msg.subject, messageId: msg.messageId, ts: msg.ts };
+      clients[idx] = { ...existing, engagementHistory: [...history, event].slice(-100) };
+      // Carry msg.ts (the real time Gmail says this was sent/received)
+      // alongside the text — previously this pushed a plain string and
+      // every note from a sync run got stamped with the sync's own
+      // current time below, which is why the dashboard's "Emails
+      // Received" group showed identical "Xm ago" for every entry in a
+      // batch instead of each email's actual send time.
+      emailActivityNotes.push({ text: `${existing.name || existing.email} emailed us: "${msg.subject}"`, ts: msg.ts });
+      matchedCount++;
+
+      // Mark handled now, regardless of what happens below (drafted,
+      // skipped-as-already-replied, or draft attempt fails) — once we've
+      // looked at a message once, we never want to look at it again.
+      handledIds.add(msg.messageId);
+
+      // Has this sender already been replied to (via Gmail directly, or
+      // through the CRM) since they sent this message? If so, skip
+      // drafting entirely — an AI-drafted reply to an already-answered
+      // email would just be a stale, confusing item in the approval queue.
+      const msgTs = new Date(msg.ts).getTime();
+      const alreadyReplied = sentEmails.some(
+        (s) => s.toRaw.includes(msg.fromEmail) && new Date(s.ts).getTime() > msgTs
+      );
+      if (alreadyReplied) {
+        skippedAlreadyRepliedCount++;
+        continue;
+      }
+
+      // Draft a suggested reply — never sent automatically. Lands in
+      // pendingEmails for a human to review/edit/approve or reject. A
+      // failed draft attempt (bad API key, model error, etc.) shouldn't
+      // break the rest of the sync — the email is still logged above
+      // either way.
+      try {
+        const draft = await draftReply({ client: clients[idx], incomingEmail: msg, templates });
+        newPendingDrafts.push({
+          id: crypto.randomBytes(6).toString("hex"),
+          clientId: clients[idx].id,
+          to: clients[idx].email,
+          from: "tracy@elevatemy.ai",
+          subject: draft.subject,
+          body: draft.body,
+          sourceMessageId: msg.messageId,
+          sourceSubject: msg.subject,
+          createdAt: new Date().toISOString(),
+        });
+        draftedCount++;
+      } catch (e) {
+        console.warn(`[sync] AI draft failed for message ${msg.messageId}:`, e.message);
+      }
+    }
+
+    // Log Gmail-native sent mail (replies Tracy typed directly in Gmail,
+    // not through the CRM's send/approve buttons — those already log
+    // themselves in send.js/approve.js) against the matching client, so
+    // the Activity tab shows the full back-and-forth regardless of which
+    // channel was used to reply. Dedup by messageId, same as incoming.
+    for (const sent of sentEmails) {
+      const idx = clients.findIndex((c) => {
+        const email = (c.email || "").toLowerCase().trim();
+        return email && sent.toRaw.includes(email);
+      });
+      if (idx === -1) continue;
+      const existing = clients[idx];
+      const history = existing.engagementHistory || [];
+      if (history.some((e) => e.messageId === sent.messageId)) continue;
+      const event = { type: "email_sent", campaignName: sent.subject, messageId: sent.messageId, ts: sent.ts };
+      clients[idx] = { ...existing, engagementHistory: [...history, event].slice(-100) };
+    }
+
+    // Now that engagementHistory reflects any newly-detected replies
+    // (Gmail-native or CRM-native), drop any pending approval whose client
+    // has since been replied to — covers the case where a draft was
+    // created by an earlier sync run, then Tracy answered by hand in Gmail
+    // before getting to the approval queue.
+    const stillPending = (crmData.pendingEmails || []).filter((draft) => {
+      const client = clients.find((c) => c.id === draft.clientId);
+      if (!client) return true; // nothing to check against — keep it
+      const history = client.engagementHistory || [];
+      const draftCreatedTs = new Date(draft.createdAt).getTime();
+      const repliedSinceDraft = history.some(
+        (e) => e.type === "email_sent" && new Date(e.ts).getTime() >= draftCreatedTs
+      );
+      return !repliedSinceDraft;
+    });
+    const removedStaleCount = (crmData.pendingEmails || []).length - stillPending.length;
+
+    crmData.clients = clients;
+    crmData.settings = {
+      ...settings,
+      gmailLastSyncTs: Date.now(),
+      // Capped generously (not the tight 100-item Activity-tab limit) —
+      // this only needs to hold message IDs, not full event objects, so a
+      // much larger cap costs little and gives real protection against a
+      // message's dedup record ever silently expiring.
+      gmailHandledMessageIds: Array.from(handledIds).slice(-2000),
+    };
+    crmData.pendingEmails = newPendingDrafts.length
+      ? [...newPendingDrafts, ...stillPending].slice(-50)
+      : stillPending;
+    if (emailActivityNotes.length) {
+      const newEntries = emailActivityNotes.map((note) => ({ id: crypto.randomBytes(4).toString("hex"), text: note.text, ts: note.ts }));
+      crmData.activityLog = [...newEntries, ...(crmData.activityLog || [])].slice(0, 50);
+    }
+    await setCache(CRM_DATA_KEY, crmData);
+    results["crm:gmailIncoming"] = {
+      ok: true,
+      checked: emails.length,
+      matched: matchedCount,
+      drafted: draftedCount,
+      skippedAlreadyReplied: skippedAlreadyRepliedCount,
+      removedStalePending: removedStaleCount,
+    };
+  } catch (e) {
+    results["crm:gmailIncoming"] = { ok: false, error: e.message };
+    console.error("[sync] Gmail incoming email check failed:", e.message);
   }
 
   try {
