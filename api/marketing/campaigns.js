@@ -24,7 +24,7 @@ module.exports = async (req, res) => {
     }
 
     if (req.method === "POST") {
-      const { name, goal, notes, audience, startDate, endDate } = req.body || {};
+      const { name, goal, notes, audience, startDate, endDate, owner } = req.body || {};
       if (!name) return res.status(400).json({ error: "name is required" });
       const campaign = {
         id: crypto.randomBytes(6).toString("hex"),
@@ -32,6 +32,7 @@ module.exports = async (req, res) => {
         goal: goal || "",
         notes: notes || "",
         audience: audience || "",
+        owner: owner || "", // team member id (see App.jsx's `team` state) — whoever owns this campaign
         startDate: startDate || "",
         endDate: endDate || "",
         status: "draft", // draft | active | completed
