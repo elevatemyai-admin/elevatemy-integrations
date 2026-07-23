@@ -17,7 +17,7 @@ module.exports = async (req, res) => {
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
 
-  const { campaignId, type, brief, targetListKey } = req.body || {};
+  const { campaignId, type, brief, targetTier } = req.body || {};
   if (!VALID_TYPES.includes(type)) {
     return res.status(400).json({ error: `type must be one of: ${VALID_TYPES.join(", ")}` });
   }
@@ -49,7 +49,7 @@ module.exports = async (req, res) => {
       status: "pending_approval", // pending_approval | approved | scheduled | sent | rejected
       subject: draft.subject || "",
       body: draft.body,
-      targetListKey: targetListKey || "", // only meaningful for type === "email"
+      targetTier: targetTier || "", // only meaningful for type === "email" — a friendly tier name like "Building", resolved to a real Zoho list key server-side at approval time
       aiGenerated: true,
       wasEdited: false,
       createdAt: new Date().toISOString(),
