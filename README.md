@@ -10,7 +10,7 @@ needed, no "API base URL" to configure — it just works once deployed.
 **What changed:**
 - `src/App.jsx` — the CRM, adapted to call `/api/...` routes directly (relative paths) instead of `window.storage`
 - `index.html`, `src/main.jsx`, `vite.config.js` — standard Vite scaffold
-- `api/crm/data.js` — new route that replaces `window.storage`; GET loads the whole CRM dataset, POST saves it, both backed by the same Vercel KV
+- `api/crm/data.js` — new route that replaces `window.storage`; GET loads the whole CRM dataset, POST saves it, both backed by the same Vercel KVtest
 - `package.json` — now includes `react`, `react-dom`, `lucide-react`, and `vite` alongside the existing backend dependency
 
 **Deploy is the same as before** — `npm install`, then `npx vercel --prod` in
