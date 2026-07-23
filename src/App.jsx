@@ -837,6 +837,7 @@ export default function App() {
           ) : view === "content" ? (
             <ContentStudioView
               marketingHub={marketingHub}
+              team={team}
               onCreateCampaign={createMarketingCampaign}
               onGenerate={generateMarketingContent}
               onApprove={approveMarketingContent}
@@ -1523,11 +1524,14 @@ const CONTENT_TYPE_LABELS = {
   facebook_post: "Facebook post",
 };
 
-function NewCampaignForm({ onCreate, onDone }) {
+function NewCampaignForm({ team, onCreate, onDone }) {
   const [name, setName] = useState("");
   const [goal, setGoal] = useState("");
   const [audience, setAudience] = useState("");
   const [notes, setNotes] = useState("");
+  const [owner, setOwner] = useState("");
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -1535,7 +1539,7 @@ function NewCampaignForm({ onCreate, onDone }) {
     e.preventDefault();
     if (!name.trim()) return;
     setBusy(true); setError("");
-    const result = await onCreate({ name: name.trim(), goal, audience, notes });
+    const result = await onCreate({ name: name.trim(), goal, audience, notes, owner, startDate, endDate });
     setBusy(false);
     if (!result.ok) { setError(result.error); return; }
     onDone();
@@ -1544,7 +1548,19 @@ function NewCampaignForm({ onCreate, onDone }) {
   return (
     <form onSubmit={submit} className="card" style={{ padding: 16, marginBottom: 16 }}>
       <Field label="Campaign name"><input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Q3 Referral Push" /></Field>
-      <Field label="Goal (optional)"><input value={goal} onChange={e => setGoal(e.target.value)} placeholder="e.g. Re-engage stalled FP leads" /></Field>
+      <div className="field-row">
+        <Field label="Owner (optional)">
+          <select value={owner} onChange={e => setOwner(e.target.value)}>
+            <option value="">Unassigned</option>
+            {(team || []).map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+          </select>
+        </Field>
+        <Field label="Goal (optional)"><input value={goal} onChange={e => setGoal(e.target.value)} placeholder="e.g. Re-engage stalled FP leads" /></Field>
+      </div>
+      <div className="field-row">
+        <Field label="Start date (optional)"><input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} /></Field>
+        <Field label="End date (optional)"><input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} /></Field>
+      </div>
       <Field label="Audience (optional)"><input value={audience} onChange={e => setAudience(e.target.value)} placeholder="e.g. FP leads, Building/Emerging tier" /></Field>
       <Field label="Notes (optional)"><textarea rows={2} value={notes} onChange={e => setNotes(e.target.value)} style={{ width: "100%", resize: "vertical" }} /></Field>
       {error && <div style={{ fontSize: 12, color: "var(--coral)", marginBottom: 8 }}>{error}</div>}
@@ -1558,7 +1574,7 @@ function NewCampaignForm({ onCreate, onDone }) {
   );
 }
 
-function GenerateContentForm({ campaigns, onGenerate }) {
+function GenerateContentForm({ campaigns, lockedCampaignId, onGenerate }) {
   const [campaignId, setCampaignId] = useState("");
   const [type, setType] = useState("email");
   const [brief, setBrief] = useState("");
@@ -1570,7 +1586,7 @@ function GenerateContentForm({ campaigns, onGenerate }) {
   async function submit(e) {
     e.preventDefault();
     setBusy(true); setError(""); setLastResult(null);
-    const result = await onGenerate({ campaignId: campaignId || null, type, brief, targetTier: type === "email" ? targetTier : undefined });
+    const result = await onGenerate({ campaignId: lockedCampaignId || campaignId || null, type, brief, targetTier: type === "email" ? targetTier : undefined });
     setBusy(false);
     if (!result.ok) { setError(result.error); return; }
     setLastResult(result.item);
@@ -1581,14 +1597,16 @@ function GenerateContentForm({ campaigns, onGenerate }) {
     <form onSubmit={submit} className="card" style={{ padding: 16, marginBottom: 16 }}>
       <div className="task-title" style={{ marginBottom: 10 }}>Generate new content</div>
       <div style={{ display: "flex", gap: 12 }}>
-        <div style={{ flex: 1 }}>
-          <Field label="Campaign (optional)">
-            <select value={campaignId} onChange={e => setCampaignId(e.target.value)}>
-              <option value="">No campaign — standalone</option>
-              {campaigns.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-          </Field>
-        </div>
+        {!lockedCampaignId && (
+          <div style={{ flex: 1 }}>
+            <Field label="Campaign (optional)">
+              <select value={campaignId} onChange={e => setCampaignId(e.target.value)}>
+                <option value="">No campaign — standalone</option>
+                {campaigns.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </Field>
+          </div>
+        )}
         <div style={{ flex: 1 }}>
           <Field label="Type">
             <select value={type} onChange={e => setType(e.target.value)}>
@@ -1721,13 +1739,100 @@ function MarketingContentCard({ item, campaigns, onApprove }) {
   );
 }
 
-function ContentStudioView({ marketingHub, onCreateCampaign, onGenerate, onApprove }) {
+function contentTypeIcon(type) {
+  if (type === "linkedin_post") return <Linkedin size={16} />;
+  if (type === "facebook_post") return <Facebook size={16} />;
+  return <Mail size={16} />;
+}
+
+// A grid of small "asset" tiles for one campaign — the visual, HubSpot
+// Marketing-Studio-like board view. Clicking a tile expands the full
+// MarketingContentCard (approve/edit/reject, or just details if already
+// sent) right below the grid, rather than a true draggable canvas — gets
+// the same "see everything in this campaign at a glance" feel without the
+// much larger engineering cost of freeform positioning/connecting lines.
+function CampaignBoard({ campaign, items, onApprove }) {
+  const [expandedId, setExpandedId] = useState(null);
+  const expandedItem = items.find(i => i.id === expandedId);
+
+  const statusTone = { pending_approval: "gold", approved: "navy", scheduled: "navy", sent: "green", rejected: "coral" };
+
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 12, marginBottom: 16 }}>
+        {items.length === 0 ? (
+          <div className="empty-state" style={{ padding: 20, gridColumn: "1 / -1" }}>No content in this campaign yet — use the form below to generate the first piece.</div>
+        ) : items.map(item => (
+          <div
+            key={item.id}
+            className="card"
+            style={{ padding: 12, cursor: "pointer", border: expandedId === item.id ? "2px solid var(--gold)" : undefined }}
+            onClick={() => setExpandedId(id => id === item.id ? null : item.id)}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+              {contentTypeIcon(item.type)}
+              <Pill tone={statusTone[item.status] || "slate"}>{item.status.replace("_", " ")}</Pill>
+            </div>
+            <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 4, overflow: "hidden", textOverflow: "ellipsis", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
+              {item.subject || item.body.slice(0, 60)}
+            </div>
+            <div style={{ fontSize: 11, color: "var(--slate)" }}>{CONTENT_TYPE_LABELS[item.type] || item.type}{item.targetTier ? ` · ${item.targetTier}` : ""}</div>
+          </div>
+        ))}
+      </div>
+      {expandedItem && (
+        <div style={{ marginBottom: 20 }}>
+          <MarketingContentCard item={expandedItem} campaigns={[campaign]} onApprove={onApprove} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ContentStudioView({ marketingHub, team, onCreateCampaign, onGenerate, onApprove }) {
   const [showNewCampaign, setShowNewCampaign] = useState(false);
+  const [viewingCampaignId, setViewingCampaignId] = useState(null);
   const campaigns = marketingHub.campaigns || [];
   const items = marketingHub.contentItems || [];
 
-  const pending = items.filter(i => i.status === "pending_approval");
-  const others = items.filter(i => i.status !== "pending_approval" && i.status !== "rejected");
+  function memberName(id) { return (team || []).find(m => m.id === id)?.name || ""; }
+
+  const viewingCampaign = campaigns.find(c => c.id === viewingCampaignId);
+
+  if (viewingCampaign) {
+    const campaignItems = items.filter(i => i.campaignId === viewingCampaign.id && i.status !== "rejected");
+    return (
+      <div>
+        <button className="btn btn-ghost btn-sm" style={{ marginBottom: 14 }} onClick={() => setViewingCampaignId(null)}>
+          <ChevronRight size={13} style={{ transform: "rotate(180deg)" }} /> Back to campaigns
+        </button>
+        <div className="card" style={{ padding: 16, marginBottom: 20 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+            <div>
+              <div className="display" style={{ fontSize: 18 }}>{viewingCampaign.name}</div>
+              {viewingCampaign.goal && <div style={{ fontSize: 12.5, color: "var(--slate)", marginTop: 2 }}>{viewingCampaign.goal}</div>}
+            </div>
+            <Pill tone={viewingCampaign.status === "active" ? "green" : "slate"}>{viewingCampaign.status}</Pill>
+          </div>
+          <div style={{ display: "flex", gap: 18, marginTop: 12, fontSize: 12, color: "var(--slate)", flexWrap: "wrap" }}>
+            {viewingCampaign.owner && <span><User size={11} /> {memberName(viewingCampaign.owner) || "Unknown"}</span>}
+            {viewingCampaign.audience && <span>Audience: {viewingCampaign.audience}</span>}
+            {(viewingCampaign.startDate || viewingCampaign.endDate) && <span><Calendar size={11} /> {viewingCampaign.startDate ? fmtDate(viewingCampaign.startDate) : "—"} → {viewingCampaign.endDate ? fmtDate(viewingCampaign.endDate) : "—"}</span>}
+          </div>
+          {viewingCampaign.notes && <div style={{ fontSize: 12.5, marginTop: 10, color: "var(--ink)" }}>{viewingCampaign.notes}</div>}
+        </div>
+
+        <div className="section-title">Assets ({campaignItems.length})</div>
+        <CampaignBoard campaign={viewingCampaign} items={campaignItems} onApprove={onApprove} />
+
+        <div className="section-title">Add content to this campaign</div>
+        <GenerateContentForm campaigns={campaigns} lockedCampaignId={viewingCampaign.id} onGenerate={onGenerate} />
+      </div>
+    );
+  }
+
+  const pending = items.filter(i => i.status === "pending_approval" && !i.campaignId);
+  const others = items.filter(i => i.status !== "pending_approval" && i.status !== "rejected" && !i.campaignId);
 
   return (
     <div>
@@ -1738,28 +1843,39 @@ function ContentStudioView({ marketingHub, onCreateCampaign, onGenerate, onAppro
         )}
       </div>
 
-      {showNewCampaign && <NewCampaignForm onCreate={onCreateCampaign} onDone={() => setShowNewCampaign(false)} />}
+      {showNewCampaign && <NewCampaignForm team={team} onCreate={onCreateCampaign} onDone={() => setShowNewCampaign(false)} />}
 
       {campaigns.length === 0 ? (
         <div className="empty-state" style={{ padding: 20, marginBottom: 20 }}>No campaigns yet — create one, or generate standalone content below.</div>
       ) : (
-        <div className="card" style={{ padding: 4, marginBottom: 20 }}>
-          {campaigns.map(c => (
-            <div key={c.id} className="activity-row" style={{ padding: "10px 12px" }}>
-              <div>
-                <div style={{ fontWeight: 600, fontSize: 13 }}>{c.name}</div>
-                {c.goal && <div style={{ fontSize: 12, color: "var(--slate)" }}>{c.goal}</div>}
-              </div>
-              <Pill tone={c.status === "active" ? "green" : "slate"}>{c.status}</Pill>
-            </div>
-          ))}
+        <div className="card" style={{ padding: 8, marginBottom: 20, overflowX: "auto" }}>
+          <table className="ctable">
+            <thead><tr><th>Campaign</th><th>Owner</th><th>Notes</th><th>Start</th><th>End</th><th>Assets</th><th>Status</th></tr></thead>
+            <tbody>
+              {campaigns.map(c => {
+                const count = items.filter(i => i.campaignId === c.id && i.status !== "rejected").length;
+                return (
+                  <tr key={c.id} className="row-click" onClick={() => setViewingCampaignId(c.id)}>
+                    <td><div className="client-name" style={{ fontSize: 13.5 }}>{c.name}</div>{c.goal && <div className="client-sub">{c.goal}</div>}</td>
+                    <td style={{ fontSize: 12.5 }}>{memberName(c.owner) || "—"}</td>
+                    <td style={{ fontSize: 12, color: "var(--slate)", maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.notes || "—"}</td>
+                    <td style={{ fontSize: 12 }}>{c.startDate ? fmtDate(c.startDate) : "—"}</td>
+                    <td style={{ fontSize: 12 }}>{c.endDate ? fmtDate(c.endDate) : "—"}</td>
+                    <td style={{ fontSize: 12 }}>{count}</td>
+                    <td><Pill tone={c.status === "active" ? "green" : "slate"}>{c.status}</Pill></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       )}
 
-      <div className="section-title">Generate content</div>
+      <div className="section-title">Generate standalone content</div>
+      <div style={{ fontSize: 12, color: "var(--slate)", marginTop: -6, marginBottom: 12 }}>Not part of a campaign — for one-off pieces. To add content to a specific campaign, click into it above.</div>
       <GenerateContentForm campaigns={campaigns} onGenerate={onGenerate} />
 
-      <div className="section-title">Pending approval ({pending.length})</div>
+      <div className="section-title">Pending approval — standalone ({pending.length})</div>
       {pending.length === 0 ? (
         <div className="empty-state" style={{ padding: 20, marginBottom: 20 }}>Nothing waiting on you right now.</div>
       ) : (
@@ -1770,7 +1886,7 @@ function ContentStudioView({ marketingHub, onCreateCampaign, onGenerate, onAppro
 
       {others.length > 0 && (
         <>
-          <div className="section-title">Approved, scheduled &amp; sent</div>
+          <div className="section-title">Approved, scheduled &amp; sent — standalone</div>
           <div className="card" style={{ padding: 4 }}>
             {others.map(item => (
               <div key={item.id} className="activity-row" style={{ padding: "10px 12px" }}>
