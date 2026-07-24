@@ -441,6 +441,22 @@ export default function App() {
     }
   }
 
+  async function generateBrandedImage(itemId) {
+    try {
+      const res = await fetch("/api/marketing/design-card", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ itemId }),
+      });
+      const result = await res.json();
+      if (!res.ok || !result.ok) throw new Error(result.error || "Image generation failed");
+      await loadCrmData();
+      return { ok: true, ...result };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  }
+
   const selectedClient = useMemo(() => clients.find(c => c.id === selectedId) || null, [clients, selectedId]);
 
   const filteredClients = useMemo(() => clients.filter(c => {
@@ -853,6 +869,7 @@ export default function App() {
               onCreateCampaign={createMarketingCampaign}
               onGenerate={generateMarketingContent}
               onApprove={approveMarketingContent}
+              onGenerateImage={generateBrandedImage}
             />
           ) : (
             <SettingsView zohoStatus={zohoStatus} zohoError={zohoError} onTest={checkZoho} team={team} onAddTeamMember={addTeamMember} onRemoveTeamMember={removeTeamMember}
@@ -1654,7 +1671,7 @@ function GenerateContentForm({ campaigns, lockedCampaignId, onGenerate }) {
   );
 }
 
-function MarketingContentCard({ item, campaigns, onApprove }) {
+function MarketingContentCard({ item, campaigns, onApprove, onGenerateImage }) {
   const campaign = campaigns.find(c => c.id === item.campaignId);
   const [editing, setEditing] = useState(false);
   const [subject, setSubject] = useState(item.subject);
@@ -1664,6 +1681,8 @@ function MarketingContentCard({ item, campaigns, onApprove }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState(null);
+  const [imageBusy, setImageBusy] = useState(false);
+  const [imageError, setImageError] = useState("");
 
   async function handle(action) {
     setBusy(true); setError(""); setResult(null);
@@ -1675,6 +1694,13 @@ function MarketingContentCard({ item, campaigns, onApprove }) {
     setBusy(false);
     if (!res.ok) { setError(res.error); return; }
     setResult(res);
+  }
+
+  async function handleGenerateImage() {
+    setImageBusy(true); setImageError("");
+    const res = await onGenerateImage(item.id);
+    setImageBusy(false);
+    if (!res.ok) setImageError(res.error);
   }
 
   const typeIcon = item.type === "linkedin_post" ? <Linkedin size={13} /> : item.type === "facebook_post" ? <Facebook size={13} /> : <Mail size={13} />;
@@ -1694,11 +1720,36 @@ function MarketingContentCard({ item, campaigns, onApprove }) {
           {item.type === "email" && <Field label="Subject"><input value={subject} onChange={e => setSubject(e.target.value)} /></Field>}
           <Field label="Body"><textarea rows={7} value={body} onChange={e => setBody(e.target.value)} style={{ width: "100%", resize: "vertical" }} /></Field>
         </>
+      ) : item.type !== "email" && !item.hasImage ? (
+        // Social posts without a generated image yet still get a branded
+        // colored backdrop (same gradient as the tile cover) rather than
+        // plain gray text on white — so reviewing a post in-app already
+        // feels like previewing something real, not just reading a draft.
+        <div style={{ position: "relative", borderRadius: 10, padding: 16, background: contentCoverGradient(item.type), overflow: "hidden", marginBottom: 4 }}>
+          <CoverWatermark />
+          <div style={{ position: "relative", zIndex: 1, fontSize: 13, color: "#fff", whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{item.body}</div>
+        </div>
       ) : (
         <>
           {item.type === "email" && <div className="task-title" style={{ marginBottom: 4 }}>{item.subject}</div>}
           <div style={{ fontSize: 12.5, color: "var(--slate)", whiteSpace: "pre-wrap" }}>{item.body}</div>
         </>
+      )}
+
+      {item.hasImage && (
+        <div style={{ marginBottom: 10 }}>
+          <img src={`/api/marketing/card-image?itemId=${item.id}`} alt={item.imageHeadline || "Branded card"} style={{ width: "100%", maxWidth: 320, borderRadius: 10, display: "block" }} />
+          {item.imageHeadline && <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 4, fontStyle: "italic" }}>Headline: "{item.imageHeadline}"</div>}
+        </div>
+      )}
+
+      {item.type !== "email" && onGenerateImage && (
+        <div style={{ marginTop: 10 }}>
+          <button type="button" className="btn btn-ghost btn-sm" disabled={imageBusy} onClick={handleGenerateImage}>
+            {imageBusy ? <Loader2 size={12} className="spin" /> : <Sparkles size={12} />} {item.hasImage ? "Regenerate branded image" : "Generate branded image"}
+          </button>
+          {imageError && <div style={{ fontSize: 12, color: "var(--coral)", marginTop: 6 }}>{imageError}</div>}
+        </div>
       )}
 
       {item.type === "email" && (
@@ -1786,7 +1837,7 @@ function CoverWatermark() {
   );
 }
 
-function CampaignBoard({ campaign, items, onApprove }) {
+function CampaignBoard({ campaign, items, onApprove, onGenerateImage }) {
   const [expandedId, setExpandedId] = useState(null);
   const expandedItem = items.find(i => i.id === expandedId);
 
@@ -1804,14 +1855,21 @@ function CampaignBoard({ campaign, items, onApprove }) {
             style={{ overflow: "hidden", cursor: "pointer", border: expandedId === item.id ? "2px solid var(--gold)" : undefined }}
             onClick={() => setExpandedId(id => id === item.id ? null : item.id)}
           >
-            <div style={{ position: "relative", height: 64, background: contentCoverGradient(item.type), padding: "10px 12px", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
-              <CoverWatermark />
-              <div style={{ display: "flex", alignItems: "center", gap: 6, color: "#fff", position: "relative", zIndex: 1 }}>
-                {contentTypeIcon(item.type)}
-                <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em" }}>{CONTENT_TYPE_LABELS[item.type] || item.type}</span>
+            {item.hasImage ? (
+              <div style={{ position: "relative", height: 140, overflow: "hidden" }}>
+                <img src={`/api/marketing/card-image?itemId=${item.id}`} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                <div style={{ position: "absolute", top: 8, right: 8 }}><Pill tone={statusTone[item.status] || "slate"}>{item.status.replace("_", " ")}</Pill></div>
               </div>
-              <div style={{ position: "relative", zIndex: 1 }}><Pill tone={statusTone[item.status] || "slate"}>{item.status.replace("_", " ")}</Pill></div>
-            </div>
+            ) : (
+              <div style={{ position: "relative", height: 64, background: contentCoverGradient(item.type), padding: "10px 12px", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+                <CoverWatermark />
+                <div style={{ display: "flex", alignItems: "center", gap: 6, color: "#fff", position: "relative", zIndex: 1 }}>
+                  {contentTypeIcon(item.type)}
+                  <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em" }}>{CONTENT_TYPE_LABELS[item.type] || item.type}</span>
+                </div>
+                <div style={{ position: "relative", zIndex: 1 }}><Pill tone={statusTone[item.status] || "slate"}>{item.status.replace("_", " ")}</Pill></div>
+              </div>
+            )}
             <div style={{ padding: 12 }}>
               <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 4, overflow: "hidden", textOverflow: "ellipsis", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
                 {item.subject || item.body.slice(0, 60)}
@@ -1823,14 +1881,14 @@ function CampaignBoard({ campaign, items, onApprove }) {
       </div>
       {expandedItem && (
         <div style={{ marginBottom: 20 }}>
-          <MarketingContentCard item={expandedItem} campaigns={[campaign]} onApprove={onApprove} />
+          <MarketingContentCard item={expandedItem} campaigns={[campaign]} onApprove={onApprove} onGenerateImage={onGenerateImage} />
         </div>
       )}
     </div>
   );
 }
 
-function ContentStudioView({ marketingHub, team, onCreateCampaign, onGenerate, onApprove }) {
+function ContentStudioView({ marketingHub, team, onCreateCampaign, onGenerate, onApprove, onGenerateImage }) {
   const [showNewCampaign, setShowNewCampaign] = useState(false);
   const [viewingCampaignId, setViewingCampaignId] = useState(null);
   const campaigns = marketingHub.campaigns || [];
@@ -1864,7 +1922,7 @@ function ContentStudioView({ marketingHub, team, onCreateCampaign, onGenerate, o
         </div>
 
         <div className="section-title">Assets ({campaignItems.length})</div>
-        <CampaignBoard campaign={viewingCampaign} items={campaignItems} onApprove={onApprove} />
+        <CampaignBoard campaign={viewingCampaign} items={campaignItems} onApprove={onApprove} onGenerateImage={onGenerateImage} />
 
         <div className="section-title">Add content to this campaign</div>
         <GenerateContentForm campaigns={campaigns} lockedCampaignId={viewingCampaign.id} onGenerate={onGenerate} />
@@ -1921,7 +1979,7 @@ function ContentStudioView({ marketingHub, team, onCreateCampaign, onGenerate, o
         <div className="empty-state" style={{ padding: 20, marginBottom: 20 }}>Nothing waiting on you right now.</div>
       ) : (
         <div style={{ marginBottom: 20 }}>
-          {pending.map(item => <MarketingContentCard key={item.id} item={item} campaigns={campaigns} onApprove={onApprove} />)}
+          {pending.map(item => <MarketingContentCard key={item.id} item={item} campaigns={campaigns} onApprove={onApprove} onGenerateImage={onGenerateImage} />)}
         </div>
       )}
 
