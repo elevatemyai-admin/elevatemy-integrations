@@ -2568,7 +2568,7 @@ function ProfileTab({ client, onPatch, onDelete, onComposeEmail }) {
           const list = zohoListName(client);
           const links = [
             client.website && { label: "Business website", href: client.website },
-            client.dashboard?.vercelUrl && { label: "Client site (built for them)", href: client.dashboard.vercelUrl },
+            client.dashboard?.vercelUrl && { label: "Action site (built for them)", href: client.dashboard.vercelUrl },
             client.dashboard?.githubUrl && { label: "GitHub repo", href: client.dashboard.githubUrl },
           ].filter(Boolean);
           return (
