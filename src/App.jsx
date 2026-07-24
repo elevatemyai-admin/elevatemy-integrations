@@ -4,7 +4,7 @@ import {
   Newspaper, Share2, ClipboardCheck, CheckCircle2, Circle, AlertTriangle, Trash2,
   ChevronRight, ChevronDown, Save, Loader2, Calendar, Clock, History, Mail, User, Users2, DollarSign, Megaphone,
   Settings as SettingsIcon, RefreshCw, Wifi, WifiOff, TrendingUp, CreditCard, Activity,
-  Inbox, UserPlus, Check, Send, FileSignature, Eye, EyeOff, Sparkles, Linkedin, Facebook, Copy, Link2
+  Inbox, UserPlus, Check, Send, FileSignature, Eye, EyeOff, Sparkles, Linkedin, Facebook, Copy, Link2, Globe, Download
 } from "lucide-react";
 
 // ---------- constants ----------
@@ -647,6 +647,7 @@ export default function App() {
     { key: "tasks", label: "Tasks", icon: ListChecks },
     { key: "marketing", label: "Marketing", icon: Megaphone },
     { key: "content", label: "Content Studio", icon: Sparkles },
+    { key: "actionsites", label: "Action Sites", icon: Globe },
     { key: "settings", label: "Settings", icon: SettingsIcon },
   ];
 
@@ -821,6 +822,7 @@ export default function App() {
               {view === "tasks" && "Tasks & Campaigns"}
               {view === "marketing" && "Marketing"}
               {view === "content" && "Content Studio"}
+              {view === "actionsites" && "Action Sites"}
               {view === "settings" && "Settings"}
             </h1>
             <p>
@@ -830,6 +832,7 @@ export default function App() {
               {view === "tasks" && "What clients owe us, and what we owe clients."}
               {view === "marketing" && "CPA campaigns and prospecting activity, live from Zoho once connected."}
               {view === "content" && "AI-drafted campaigns, emails, and social posts — review and approve, nothing goes out without you."}
+              {view === "actionsites" && "Every client's live action-plan site, one click away."}
               {view === "settings" && "Connect the CRM to your Vercel API routes."}
             </p>
           </div>
@@ -871,6 +874,8 @@ export default function App() {
               onApprove={approveMarketingContent}
               onGenerateImage={generateBrandedImage}
             />
+          ) : view === "actionsites" ? (
+            <ActionSitesView clients={clients} onOpen={(id) => { setSelectedId(id); setView("clients"); setDetailTab("dashboard"); }} />
           ) : (
             <SettingsView zohoStatus={zohoStatus} zohoError={zohoError} onTest={checkZoho} team={team} onAddTeamMember={addTeamMember} onRemoveTeamMember={removeTeamMember}
               emailTemplates={emailTemplates} onAddTemplate={addEmailTemplate} onRemoveTemplate={removeEmailTemplate} onPatchTemplate={patchEmailTemplate} />
@@ -1739,7 +1744,18 @@ function MarketingContentCard({ item, campaigns, onApprove, onGenerateImage }) {
       {item.hasImage && (
         <div style={{ marginBottom: 10 }}>
           <img src={`/api/marketing/card-image?itemId=${item.id}&v=${encodeURIComponent(item.imageGeneratedAt || "")}`} alt={item.imageHeadline || "Branded card"} style={{ width: "100%", maxWidth: 320, borderRadius: 10, display: "block" }} />
-          {item.imageHeadline && <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 4, fontStyle: "italic" }}>Headline: "{item.imageHeadline}"</div>}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
+            {item.imageHeadline && <div style={{ fontSize: 11, color: "var(--slate)", fontStyle: "italic", flex: 1 }}>Headline: "{item.imageHeadline}"</div>}
+            {item.imageUsedPhoto && <Pill tone="green">Real photo</Pill>}
+          </div>
+          <a
+            href={`/api/marketing/card-image?itemId=${item.id}&v=${encodeURIComponent(item.imageGeneratedAt || "")}`}
+            download={`${(item.imageHeadline || "branded-card").replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.png`}
+            className="btn btn-ghost btn-sm"
+            style={{ marginTop: 8 }}
+          >
+            <Download size={12} /> Download image
+          </a>
         </div>
       )}
 
@@ -1999,6 +2015,49 @@ function ContentStudioView({ marketingHub, team, onCreateCampaign, onGenerate, o
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+// ---------- Action Sites ----------
+
+// Aggregates every client that has a built action-plan/dashboard site
+// linked (client.dashboard.vercelUrl) into one quick-access list — pulls
+// from the same field already editable in each client's Dashboard tab,
+// so there's nothing new to maintain in two places. A client only shows
+// up here once that field is actually set.
+function ActionSitesView({ clients, onOpen }) {
+  const sites = clients
+    .filter(c => c.dashboard?.vercelUrl)
+    .sort((a, b) => (a.dashboard.lastInterview || "").localeCompare(b.dashboard.lastInterview || "") * -1 || clientDisplayName(a).localeCompare(clientDisplayName(b)));
+
+  if (sites.length === 0) {
+    return (
+      <div className="empty-state">
+        <div className="display">No action sites linked yet</div>
+        Open a client's Dashboard tab and add their Vercel URL — they'll show up here automatically.
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 14 }}>
+      {sites.map(c => (
+        <div key={c.id} className="card" style={{ padding: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+            <div style={{ cursor: "pointer" }} onClick={() => onOpen(c.id)}>
+              <div className="client-name">{clientDisplayName(c)}</div>
+              {c.company && <div className="client-sub">{c.company}</div>}
+            </div>
+            <Globe size={16} color="var(--navy)" />
+          </div>
+          {c.dashboard.lastInterview && <div style={{ fontSize: 11, color: "var(--slate)", marginBottom: 8 }}>Last interview: {fmtDate(c.dashboard.lastInterview)}</div>}
+          {c.dashboard.notes && <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 10, overflow: "hidden", textOverflow: "ellipsis", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{c.dashboard.notes}</div>}
+          <a href={c.dashboard.vercelUrl} target="_blank" rel="noreferrer" className="btn btn-gold btn-sm" style={{ width: "100%", justifyContent: "center" }}>
+            <ExternalLink size={13} /> Open site
+          </a>
+        </div>
+      ))}
     </div>
   );
 }

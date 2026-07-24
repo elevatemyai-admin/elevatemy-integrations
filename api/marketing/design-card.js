@@ -32,9 +32,9 @@ module.exports = async (req, res) => {
     if (idx === -1) return res.status(404).json({ error: "Content item not found" });
 
     const item = items[idx];
-    let headline, pngBuffer;
+    let headline, pngBuffer, usedPhoto;
     try {
-      ({ headline, pngBuffer } = await renderBrandedCard({ body: item.body, type: item.type }));
+      ({ headline, pngBuffer, usedPhoto } = await renderBrandedCard({ body: item.body, type: item.type }));
     } catch (e) {
       return res.status(502).json({ error: "Card generation failed: " + e.message });
     }
@@ -43,11 +43,11 @@ module.exports = async (req, res) => {
     // metadata (not the image itself) goes into the main crm:data blob.
     await setCache(`marketing:image:${itemId}`, pngBuffer.toString("base64"));
 
-    items[idx] = { ...item, hasImage: true, imageHeadline: headline, imageGeneratedAt: new Date().toISOString() };
+    items[idx] = { ...item, hasImage: true, imageHeadline: headline, imageUsedPhoto: !!usedPhoto, imageGeneratedAt: new Date().toISOString() };
     crmData.marketingHub.contentItems = items;
     await setCache(CRM_DATA_KEY, crmData);
 
-    res.status(200).json({ ok: true, headline, imageUrl: `/api/marketing/card-image?itemId=${itemId}` });
+    res.status(200).json({ ok: true, headline, usedPhoto: !!usedPhoto, imageUrl: `/api/marketing/card-image?itemId=${itemId}` });
   } catch (e) {
     console.error("[marketing/design-card] failed:", e.message);
     res.status(500).json({ error: e.message });
