@@ -9,6 +9,11 @@ import {
 
 // ---------- constants ----------
 
+const LEAD_SOURCES = [
+  "LinkedIn DM", "LinkedIn post/comment", "Referral", "Cold email",
+  "Website / assessment", "Facebook", "CPA campaign", "In person", "Other",
+];
+
 const STAGES = [
   { key: "assessment", label: "Assessment", icon: ClipboardCheck },
   { key: "newsletter", label: "Newsletter", icon: Newspaper },
@@ -115,6 +120,11 @@ const emptyClient = () => ({
   // these are purely additional reference info, each just a plain string.
   additionalEmails: [],
   additionalPhones: [],
+  // Where this contact originally came from — free-form dropdown, set at
+  // add-time or later from the Profile tab. Separate from assessment.path
+  // (GB/FP track), which can also be set before an assessment is actually
+  // completed, for an "expected track" on a brand-new lead.
+  leadSource: "",
   status: "lead",
   tags: [],
   hidden: false,
@@ -170,6 +180,22 @@ function isOverdue(task) {
 // all — fall back to company, then email, before ever showing "Unnamed
 // client", since a bare email is far more useful/identifying than nothing.
 function clientDisplayName(c) { return (c && (c.name || c.company || c.email)) || "Unnamed client"; }
+
+// Normalizes a name to "First capital, rest lowercase" per word — applied
+// at save time (not live per-keystroke, to avoid fighting the cursor
+// while someone's still typing). Also capitalizes after hyphens and
+// apostrophes so common patterns like "mary-jane o'brien" become
+// "Mary-Jane O'Brien" rather than a naive single-capital pass flattening
+// them. Not perfect for every real name (genuinely unusual internal
+// capitalization like "McDonald" or "DeSoto" will still get flattened to
+// "Mcdonald"/"Desoto") — a full name-capitalization solution would need a
+// dictionary of known exceptions, which felt like overkill here; this
+// covers the common case well.
+function toNameCase(str) {
+  return (str || "")
+    .toLowerCase()
+    .replace(/(^|[\s'-])([a-z])/g, (match, sep, letter) => sep + letter.toUpperCase());
+}
 
 // Payment-status pills, computed live from billing entries + the manual
 // pro-bono flag — not stored separately, so they're always accurate.
@@ -2476,8 +2502,8 @@ function ProfileTab({ client, onPatch, onDelete, onComposeEmail }) {
   return (
     <div>
       <div className="field-row">
-        <Field label="First name"><input value={client.firstName || ""} onChange={e => patchName({ firstName: e.target.value })} /></Field>
-        <Field label="Last name"><input value={client.lastName || ""} onChange={e => patchName({ lastName: e.target.value })} /></Field>
+        <Field label="First name"><input value={client.firstName || ""} onChange={e => patchName({ firstName: e.target.value })} onBlur={e => patchName({ firstName: toNameCase(e.target.value) })} /></Field>
+        <Field label="Last name"><input value={client.lastName || ""} onChange={e => patchName({ lastName: e.target.value })} onBlur={e => patchName({ lastName: toNameCase(e.target.value) })} /></Field>
       </div>
       <Field label="Company"><input value={client.company} onChange={e => onPatch({ company: e.target.value })} /></Field>
       <Field label="Business website"><input value={client.website || ""} onChange={e => onPatch({ website: e.target.value })} placeholder="https://theirbusiness.com" /></Field>
@@ -2521,6 +2547,13 @@ function ProfileTab({ client, onPatch, onDelete, onComposeEmail }) {
       <button type="button" className="btn btn-ghost btn-sm" style={{ marginBottom: 12 }} onClick={() => onPatch({ additionalPhones: [...(client.additionalPhones || []), ""] })}>
         <Plus size={13} /> Add phone
       </button>
+
+      <Field label="Lead source" hint="Where this contact originally came from">
+        <select value={client.leadSource || ""} onChange={e => onPatch({ leadSource: e.target.value })}>
+          <option value="">Not set</option>
+          {LEAD_SOURCES.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+      </Field>
 
       <Field label="Status">
         <select value={client.status} onChange={e => onPatch({ status: e.target.value })}><option value="lead">Lead</option><option value="active">Active</option><option value="inactive">Inactive</option></select>
@@ -2910,15 +2943,79 @@ function ClientTasksTab({ client, team, onAdd, onToggle, onRemove, onPatch }) {
 function AddClientForm({ onCancel, onSave }) {
   const [firstName, setFirstName] = useState(""); const [lastName, setLastName] = useState(""); const [company, setCompany] = useState(""); const [email, setEmail] = useState("");
   const [phone, setPhone] = useState(""); const [status, setStatus] = useState("lead");
+  const [leadSource, setLeadSource] = useState("");
+  const [expectedTrack, setExpectedTrack] = useState(""); // "" | "general" | "financial"
+  const [linkedInUrl, setLinkedInUrl] = useState("");
+  const [extracting, setExtracting] = useState(false);
+  const [extractError, setExtractError] = useState("");
+  const [extracted, setExtracted] = useState(false);
+
+  async function handleScreenshotUpload(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setExtracting(true); setExtractError(""); setExtracted(false);
+    try {
+      const base64 = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result.split(",")[1]);
+        reader.onerror = () => reject(new Error("Couldn't read that file"));
+        reader.readAsDataURL(file);
+      });
+      const res = await fetch("/api/crm/extract-contact", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageBase64: base64, mediaType: file.type || "image/png" }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || "Extraction failed");
+
+      const c = data.contact;
+      if (c.firstName) setFirstName(c.firstName);
+      if (c.lastName) setLastName(c.lastName);
+      if (c.company) setCompany(c.company);
+      if (c.email) setEmail(c.email);
+      if (c.phone) setPhone(c.phone);
+      if (c.linkedInUrl) setLinkedInUrl(c.linkedInUrl);
+      setExtracted(true);
+    } catch (err) {
+      setExtractError(err.message);
+    }
+    setExtracting(false);
+  }
+
   function submit(e) {
     e.preventDefault();
     if (!firstName.trim() && !lastName.trim()) return;
-    const name = [firstName.trim(), lastName.trim()].filter(Boolean).join(" ");
-    onSave({ firstName: firstName.trim(), lastName: lastName.trim(), name, company, email, phone, status });
+    const casedFirst = toNameCase(firstName.trim());
+    const casedLast = toNameCase(lastName.trim());
+    const name = [casedFirst, casedLast].filter(Boolean).join(" ");
+    const data = {
+      firstName: casedFirst, lastName: casedLast, name, company, email, phone, status, leadSource,
+    };
+    if (expectedTrack) {
+      data.assessment = { ...emptyAssessment(), path: expectedTrack };
+    }
+    if (linkedInUrl.trim()) {
+      data.social = [{ id: uid(), platform: "LinkedIn", link: linkedInUrl.trim(), status: "active" }];
+    }
+    onSave(data);
   }
+
   return (
     <form onSubmit={submit}>
       <div className="display" style={{ fontSize: 18, marginBottom: 16 }}>Add a client</div>
+
+      <div className="card" style={{ padding: 12, marginBottom: 16, background: "var(--cloud)" }}>
+        <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 6 }}>Import from a screenshot</div>
+        <div style={{ fontSize: 11.5, color: "var(--slate)", marginBottom: 8 }}>
+          A LinkedIn "Contact info" popup, a business card photo, an email signature — Claude reads it and fills in what it can below. Always double-check before saving.
+        </div>
+        <input type="file" accept="image/*" onChange={handleScreenshotUpload} disabled={extracting} />
+        {extracting && <div style={{ fontSize: 12, color: "var(--slate)", marginTop: 8, display: "flex", alignItems: "center", gap: 6 }}><Loader2 size={13} className="spin" /> Reading screenshot…</div>}
+        {extractError && <div style={{ fontSize: 12, color: "var(--coral)", marginTop: 8 }}>{extractError}</div>}
+        {extracted && !extracting && <div style={{ fontSize: 12, color: "var(--green)", marginTop: 8 }}>Extracted — review the fields below before saving.</div>}
+      </div>
+
       <div className="field-row">
         <Field label="First name"><input autoFocus value={firstName} onChange={e => setFirstName(e.target.value)} /></Field>
         <Field label="Last name"><input value={lastName} onChange={e => setLastName(e.target.value)} /></Field>
@@ -2927,6 +3024,22 @@ function AddClientForm({ onCancel, onSave }) {
       <div className="field-row">
         <Field label="Email"><input type="email" value={email} onChange={e => setEmail(e.target.value)} /></Field>
         <Field label="Phone"><input value={phone} onChange={e => setPhone(e.target.value)} /></Field>
+      </div>
+      {linkedInUrl && <Field label="LinkedIn"><input value={linkedInUrl} onChange={e => setLinkedInUrl(e.target.value)} /></Field>}
+      <div className="field-row">
+        <Field label="Lead source" hint="Where this contact came from">
+          <select value={leadSource} onChange={e => setLeadSource(e.target.value)}>
+            <option value="">Not set</option>
+            {LEAD_SOURCES.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </Field>
+        <Field label="Expected track" hint="Can change once they take the real assessment">
+          <select value={expectedTrack} onChange={e => setExpectedTrack(e.target.value)}>
+            <option value="">Not sure yet</option>
+            <option value="general">General Business</option>
+            <option value="financial">Financial Services</option>
+          </select>
+        </Field>
       </div>
       <Field label="Status"><select value={status} onChange={e => setStatus(e.target.value)}><option value="lead">Lead</option><option value="active">Active</option><option value="inactive">Inactive</option></select></Field>
       <div style={{ display: "flex", gap: 8, marginTop: 18 }}>
