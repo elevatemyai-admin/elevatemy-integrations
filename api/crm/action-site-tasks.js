@@ -15,7 +15,13 @@
 // silently break if a site's ROADMAP array is ever reordered/edited).
 //
 // GET  ?email=...              -> { steps: [{ stepKey, title, done, assigneeName, notes }] }
-// POST { email, steps: [...] } -> upserts each step into that client's tasks array
+// POST { email, steps: [...], event?: { type: 'chat_message_sent' | 'voice_input_used' } }
+//   -> upserts each step into that client's tasks array; a newly-completed
+//      step (transitioning pending -> done) logs an activity entry; an
+//      optional `event` logs its own lightweight activity entry and, for
+//      voice_input_used, increments a running per-client counter
+//      (client.actionSiteVoiceCount) — this is a USAGE COUNT ONLY, no
+//      actual audio is recorded or stored anywhere.
 //
 // Deliberately public/unauthenticated, same as api/crm/data.js — these
 // action-plan sites are separate client-facing projects with no shared
@@ -27,6 +33,10 @@ const { getCache, setCache } = require("../../lib/store");
 const crypto = require("crypto");
 
 const CRM_DATA_KEY = "crm:data";
+
+function clientLabel(client) {
+  return client.name || client.company || client.email || "A client";
+}
 
 module.exports = async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*"); // called cross-origin from separate action-plan-site domains
@@ -57,7 +67,7 @@ module.exports = async (req, res) => {
     }
 
     if (req.method === "POST") {
-      const { email, steps } = req.body || {};
+      const { email, steps, event } = req.body || {};
       const cleanEmail = (email || "").toLowerCase().trim();
       if (!cleanEmail) return res.status(400).json({ error: "email is required" });
       if (!Array.isArray(steps)) return res.status(400).json({ error: "steps array is required" });
@@ -67,10 +77,12 @@ module.exports = async (req, res) => {
 
       const client = clients[idx];
       const updatedTasks = [...(client.tasks || [])];
+      const newActivityEntries = [];
 
       for (const step of steps) {
         if (!step.stepKey) continue;
         const taskIdx = updatedTasks.findIndex((t) => t.actionSiteStepKey === step.stepKey);
+        const wasDone = taskIdx !== -1 && updatedTasks[taskIdx].status === "done";
         const patch = {
           actionSiteStepKey: step.stepKey,
           title: step.title || (taskIdx !== -1 ? updatedTasks[taskIdx].title : step.stepKey),
@@ -84,10 +96,29 @@ module.exports = async (req, res) => {
         } else {
           updatedTasks.push({ id: crypto.randomBytes(6).toString("hex"), dueDate: "", assignedTo: null, blockStart: "", blockEnd: "", ...patch });
         }
+        // Only log a fresh completion, not every sync call (which fires
+        // on every save regardless of whether anything actually changed).
+        if (step.done && !wasDone) {
+          newActivityEntries.push(`${clientLabel(client)} completed "${patch.title}" on their action site`);
+        }
       }
 
-      clients[idx] = { ...client, tasks: updatedTasks };
+      let voiceCount = client.actionSiteVoiceCount || 0;
+      if (event && event.type === "voice_input_used") {
+        voiceCount += 1;
+        newActivityEntries.push(`${clientLabel(client)} used voice input on their action site`);
+      } else if (event && event.type === "chat_message_sent") {
+        newActivityEntries.push(`${clientLabel(client)} sent a message via their action site chat`);
+      }
+
+      clients[idx] = { ...client, tasks: updatedTasks, actionSiteVoiceCount: voiceCount };
       crmData.clients = clients;
+
+      if (newActivityEntries.length) {
+        const entries = newActivityEntries.map((text) => ({ id: crypto.randomBytes(4).toString("hex"), text, ts: new Date().toISOString() }));
+        crmData.activityLog = [...entries, ...(crmData.activityLog || [])].slice(0, 50);
+      }
+
       await setCache(CRM_DATA_KEY, crmData);
       return res.status(200).json({ ok: true });
     }

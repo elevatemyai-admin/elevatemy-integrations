@@ -875,7 +875,7 @@ export default function App() {
               onGenerateImage={generateBrandedImage}
             />
           ) : view === "actionsites" ? (
-            <ActionSitesView clients={clients} onOpen={(id) => { setSelectedId(id); setView("clients"); setDetailTab("dashboard"); }} />
+            <ActionSitesView clients={clients} activityLog={activityLog} onOpen={(id) => { setSelectedId(id); setView("clients"); setDetailTab("dashboard"); }} />
           ) : (
             <SettingsView zohoStatus={zohoStatus} zohoError={zohoError} onTest={checkZoho} team={team} onAddTeamMember={addTeamMember} onRemoveTeamMember={removeTeamMember}
               emailTemplates={emailTemplates} onAddTemplate={addEmailTemplate} onRemoveTemplate={removeEmailTemplate} onPatchTemplate={patchEmailTemplate} />
@@ -2026,7 +2026,16 @@ function ContentStudioView({ marketingHub, team, onCreateCampaign, onGenerate, o
 // from the same field already editable in each client's Dashboard tab,
 // so there's nothing new to maintain in two places. A client only shows
 // up here once that field is actually set.
-function ActionSitesView({ clients, onOpen }) {
+//
+// Each card also shows: % of action-site tasks completed (synced from
+// that client's own site via api/crm/action-site-tasks.js — both the
+// PLAN and ROADMAP trackers, tagged with actionSiteStepKey), how many
+// times they've used voice input on the site (a usage count only — no
+// audio is ever recorded or stored), and their most recent activity
+// (reusing the same global activityLog + name/email text-matching
+// heuristic as ClientActivityTab and the Import tab's "Actions taken"
+// section, since action-site events get logged there the same way).
+function ActionSitesView({ clients, activityLog, onOpen }) {
   const sites = clients
     .filter(c => c.dashboard?.vercelUrl)
     .sort((a, b) => (a.dashboard.lastInterview || "").localeCompare(b.dashboard.lastInterview || "") * -1 || clientDisplayName(a).localeCompare(clientDisplayName(b)));
@@ -2041,23 +2050,60 @@ function ActionSitesView({ clients, onOpen }) {
   }
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 14 }}>
-      {sites.map(c => (
-        <div key={c.id} className="card" style={{ padding: 16 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
-            <div style={{ cursor: "pointer" }} onClick={() => onOpen(c.id)}>
-              <div className="client-name">{clientDisplayName(c)}</div>
-              {c.company && <div className="client-sub">{c.company}</div>}
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 14 }}>
+      {sites.map(c => {
+        const actionTasks = (c.tasks || []).filter(t => t.actionSiteStepKey);
+        const doneCount = actionTasks.filter(t => t.status === "done").length;
+        const pct = actionTasks.length ? Math.round((doneCount / actionTasks.length) * 100) : null;
+        const voiceCount = c.actionSiteVoiceCount || 0;
+        const recentActivity = (activityLog || [])
+          .filter(a => (c.email && a.text.includes(c.email)) || (c.name && a.text.includes(c.name)))
+          .slice(0, 3);
+
+        return (
+          <div key={c.id} className="card" style={{ padding: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+              <div style={{ cursor: "pointer" }} onClick={() => onOpen(c.id)}>
+                <div className="client-name">{clientDisplayName(c)}</div>
+                {c.company && <div className="client-sub">{c.company}</div>}
+              </div>
+              <Globe size={16} color="var(--navy)" />
             </div>
-            <Globe size={16} color="var(--navy)" />
+
+            {pct !== null && (
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--slate)", marginBottom: 3 }}>
+                  <span>{doneCount} of {actionTasks.length} tasks done</span>
+                  <span style={{ fontWeight: 700, color: "var(--navy)" }}>{pct}%</span>
+                </div>
+                <div className="cat-bar-track"><div className="cat-bar-fill" style={{ width: `${pct}%` }} /></div>
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
+              {voiceCount > 0 && <Pill tone="purple">🎤 {voiceCount} voice message{voiceCount !== 1 ? "s" : ""}</Pill>}
+            </div>
+
+            {recentActivity.length > 0 && (
+              <div style={{ marginBottom: 10, borderTop: "1px solid var(--slate-line)", paddingTop: 8 }}>
+                <div style={{ fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", color: "var(--slate)", marginBottom: 4 }}>Recent activity</div>
+                {recentActivity.map(a => (
+                  <div key={a.id} style={{ fontSize: 11.5, color: "var(--ink)", marginBottom: 3, display: "flex", justifyContent: "space-between", gap: 8 }}>
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.text}</span>
+                    <span style={{ color: "var(--slate)", flexShrink: 0 }}>{timeAgo(a.ts)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {c.dashboard.notes && <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 10, overflow: "hidden", textOverflow: "ellipsis", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{c.dashboard.notes}</div>}
+
+            <a href={c.dashboard.vercelUrl} target="_blank" rel="noreferrer" className="btn btn-gold btn-sm" style={{ width: "100%", justifyContent: "center" }}>
+              <ExternalLink size={13} /> Open site
+            </a>
           </div>
-          {c.dashboard.lastInterview && <div style={{ fontSize: 11, color: "var(--slate)", marginBottom: 8 }}>Last interview: {fmtDate(c.dashboard.lastInterview)}</div>}
-          {c.dashboard.notes && <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 10, overflow: "hidden", textOverflow: "ellipsis", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{c.dashboard.notes}</div>}
-          <a href={c.dashboard.vercelUrl} target="_blank" rel="noreferrer" className="btn btn-gold btn-sm" style={{ width: "100%", justifyContent: "center" }}>
-            <ExternalLink size={13} /> Open site
-          </a>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
