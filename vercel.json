@@ -2,5 +2,10 @@
   "crons": [
     { "path": "/api/cron/sync", "schedule": "0 12 * * *" },
     { "path": "/api/cron/triage", "schedule": "0 13 * * *" }
-  ]
+  ],
+  "functions": {
+    "api/marketing/design-card.js": {
+      "includeFiles": "lib/fonts/**"
+    }
+  }
 }
