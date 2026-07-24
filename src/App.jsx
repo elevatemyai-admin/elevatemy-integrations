@@ -661,28 +661,28 @@ export default function App() {
     <div className="crm-root">
       <style>{`
         .crm-root {
-          // Brand colors below now come from the official elevatemy.ai Brand
-          // Kit doc (uploaded July 23, 2026), verified by pixel-sampling the
-          // actual logo files inside it — not approximated from screenshots
-          // or emails, which is what earlier versions of this file did.
-          //
-          // The brand kit defines TWO variants: "Financial Services" (dark,
-          // for dark surfaces) and "General Business" (light, for light
-          // surfaces) — it explicitly says the GB variant "is not designed
-          // for dark surfaces." Since this CRM's sidebar IS a dark surface,
-          // the sidebar specifically uses the FP variant's exact colors
-          // (--sidebar-*), while the main light content area uses the GB
-          // variant (the --navy/--cloud/etc. tokens below). This isn't a
-          // style choice — it's what the brand kit's own usage rules call
-          // for given this app's actual dark/light layout.
-          //
-          // GB (General Business) palette — confirmed hex, light surfaces:
+          /* Brand colors below now come from the official elevatemy.ai Brand
+             Kit doc (uploaded July 23, 2026), verified by pixel-sampling the
+             actual logo files inside it — not approximated from screenshots
+             or emails, which is what earlier versions of this file did.
+
+             The brand kit defines TWO variants: "Financial Services" (dark,
+             for dark surfaces) and "General Business" (light, for light
+             surfaces) — it explicitly says the GB variant "is not designed
+             for dark surfaces." Since this CRM's sidebar IS a dark surface,
+             the sidebar specifically uses the FP variant's exact colors
+             (--sidebar-*), while the main light content area uses the GB
+             variant (the --navy/--cloud/etc. tokens below). This isn't a
+             style choice — it's what the brand kit's own usage rules call
+             for given this app's actual dark/light layout.
+
+             GB (General Business) palette — confirmed hex, light surfaces: */
           --ink:#1a1a1a; --navy:#1B3A6B; --navy-soft:#3D4E8A; --cloud:#F8F6F2; --cloud-dim:#EAEBEA;
           --teal-accent:#00A99D; --pale-teal:#5BC8C0; --peach-accent:#E5C9B2;
           --card:#FFFFFF; --gold:#E8A33D; --gold-soft:#FBEBD2; --green:#4C7A5E; --green-soft:#E1EBE4;
           --coral:#C7554F; --coral-soft:#F5DEDC; --slate:#6B7280; --slate-line:#DADEE3;
-          // FP (Financial Services) palette — confirmed hex, used ONLY for
-          // the dark sidebar (background, hover states, wordmark, icon):
+          /* FP (Financial Services) palette — confirmed hex, used ONLY for
+             the dark sidebar (background, hover states, wordmark, icon): */
           --sidebar-bg:#0B1120; --sidebar-icon-bg:#141E30; --sidebar-bar:#3D4E8A;
           --sidebar-teal:#2DD4C8; --sidebar-text:#F1F5F9;
           font-family:'Inter',-apple-system,sans-serif; background:var(--cloud); color:var(--ink);
