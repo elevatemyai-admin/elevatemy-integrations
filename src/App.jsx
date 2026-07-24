@@ -2088,41 +2088,53 @@ function ActionSitesView({ clients, activityLog, onOpen }) {
         const doneCount = actionTasks.filter(t => t.status === "done").length;
         const pct = actionTasks.length ? Math.round((doneCount / actionTasks.length) * 100) : null;
         const voiceCount = c.actionSiteVoiceCount || 0;
+        // Only activity that actually happened ON the action site itself
+        // (task completions, chat/voice usage — all logged by
+        // api/crm/action-site-tasks.js with this exact phrasing) — NOT
+        // general email activity, which would otherwise also match via
+        // the same name/email text-search this used to use.
         const recentActivity = (activityLog || [])
+          .filter(a => a.text.includes("on their action site") || a.text.includes("action site chat"))
           .filter(a => (c.email && a.text.includes(c.email)) || (c.name && a.text.includes(c.name)))
           .slice(0, 3);
+        const thumbnailUrl = `https://api.microlink.io/?url=${encodeURIComponent(c.dashboard.vercelUrl)}&meta=false&screenshot=&embed=screenshot.url`;
 
         return (
-          <div key={c.id} className="card" style={{ padding: 16 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
-              <div style={{ cursor: "pointer" }} onClick={() => onOpen(c.id)}>
-                <div className="client-name">{clientDisplayName(c)}</div>
-                {c.company && <div className="client-sub">{c.company}</div>}
-              </div>
-              <Globe size={16} color="var(--navy)" />
+          <div key={c.id} className="card" style={{ padding: 0, overflow: "hidden" }}>
+            <div style={{ position: "relative", height: 130, background: "var(--cloud-dim)", cursor: "pointer" }} onClick={() => window.open(c.dashboard.vercelUrl, "_blank")}>
+              <img src={thumbnailUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: "top", display: "block" }}
+                onError={(e) => { e.target.style.display = "none"; }} />
             </div>
-
-            {pct !== null && (
-              <div style={{ marginBottom: 10 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--slate)", marginBottom: 3 }}>
-                  <span>{doneCount} of {actionTasks.length} tasks done</span>
-                  <span style={{ fontWeight: 700, color: "var(--navy)" }}>{pct}%</span>
+            <div style={{ padding: 16 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+                <div style={{ cursor: "pointer" }} onClick={() => onOpen(c.id)}>
+                  <div className="client-name">{clientDisplayName(c)}</div>
+                  {c.company && <div className="client-sub">{c.company}</div>}
                 </div>
-                <div className="cat-bar-track"><div className="cat-bar-fill" style={{ width: `${pct}%` }} /></div>
+                <Globe size={16} color="var(--navy)" />
               </div>
-            )}
 
-            <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
-              {voiceCount > 0 && <Pill tone="purple">🎤 {voiceCount} voice message{voiceCount !== 1 ? "s" : ""}</Pill>}
-            </div>
+              {pct !== null && (
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--slate)", marginBottom: 3 }}>
+                    <span>{doneCount} of {actionTasks.length} tasks done</span>
+                    <span style={{ fontWeight: 700, color: "var(--navy)" }}>{pct}%</span>
+                  </div>
+                  <div className="cat-bar-track"><div className="cat-bar-fill" style={{ width: `${pct}%` }} /></div>
+                </div>
+              )}
 
-            {recentActivity.length > 0 && (
-              <div style={{ marginBottom: 10, borderTop: "1px solid var(--slate-line)", paddingTop: 8 }}>
-                <div style={{ fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", color: "var(--slate)", marginBottom: 4 }}>Recent activity</div>
-                {recentActivity.map(a => (
-                  <div key={a.id} style={{ fontSize: 11.5, color: "var(--ink)", marginBottom: 3, display: "flex", justifyContent: "space-between", gap: 8 }}>
-                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.text}</span>
-                    <span style={{ color: "var(--slate)", flexShrink: 0 }}>{timeAgo(a.ts)}</span>
+              <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
+                {voiceCount > 0 && <Pill tone="purple">🎤 {voiceCount} voice message{voiceCount !== 1 ? "s" : ""}</Pill>}
+              </div>
+
+              {recentActivity.length > 0 && (
+                <div style={{ marginBottom: 10, borderTop: "1px solid var(--slate-line)", paddingTop: 8 }}>
+                  <div style={{ fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", color: "var(--slate)", marginBottom: 4 }}>Recent activity</div>
+                  {recentActivity.map(a => (
+                    <div key={a.id} style={{ fontSize: 11.5, color: "var(--ink)", marginBottom: 3, display: "flex", justifyContent: "space-between", gap: 8 }}>
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.text}</span>
+                      <span style={{ color: "var(--slate)", flexShrink: 0 }}>{timeAgo(a.ts)}</span>
                   </div>
                 ))}
               </div>
@@ -2133,6 +2145,7 @@ function ActionSitesView({ clients, activityLog, onOpen }) {
             <a href={c.dashboard.vercelUrl} target="_blank" rel="noreferrer" className="btn btn-gold btn-sm" style={{ width: "100%", justifyContent: "center" }}>
               <ExternalLink size={13} /> Open site
             </a>
+            </div>
           </div>
         );
       })}
