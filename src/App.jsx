@@ -1738,7 +1738,7 @@ function MarketingContentCard({ item, campaigns, onApprove, onGenerateImage }) {
 
       {item.hasImage && (
         <div style={{ marginBottom: 10 }}>
-          <img src={`/api/marketing/card-image?itemId=${item.id}`} alt={item.imageHeadline || "Branded card"} style={{ width: "100%", maxWidth: 320, borderRadius: 10, display: "block" }} />
+          <img src={`/api/marketing/card-image?itemId=${item.id}&v=${encodeURIComponent(item.imageGeneratedAt || "")}`} alt={item.imageHeadline || "Branded card"} style={{ width: "100%", maxWidth: 320, borderRadius: 10, display: "block" }} />
           {item.imageHeadline && <div style={{ fontSize: 11, color: "var(--slate)", marginTop: 4, fontStyle: "italic" }}>Headline: "{item.imageHeadline}"</div>}
         </div>
       )}
@@ -1857,7 +1857,7 @@ function CampaignBoard({ campaign, items, onApprove, onGenerateImage }) {
           >
             {item.hasImage ? (
               <div style={{ position: "relative", height: 140, overflow: "hidden" }}>
-                <img src={`/api/marketing/card-image?itemId=${item.id}`} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                <img src={`/api/marketing/card-image?itemId=${item.id}&v=${encodeURIComponent(item.imageGeneratedAt || "")}`} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
                 <div style={{ position: "absolute", top: 8, right: 8 }}><Pill tone={statusTone[item.status] || "slate"}>{item.status.replace("_", " ")}</Pill></div>
               </div>
             ) : (
