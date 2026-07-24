@@ -109,6 +109,12 @@ const emptyClient = () => ({
   website: "",
   email: "",
   phone: "",
+  // Extra contact points beyond the primary email/phone above — the
+  // primary fields stay untouched since they're used for matching
+  // throughout the app (Gmail sync, Zoho, search, findClientByEmail);
+  // these are purely additional reference info, each just a plain string.
+  additionalEmails: [],
+  additionalPhones: [],
   status: "lead",
   tags: [],
   hidden: false,
@@ -2479,6 +2485,43 @@ function ProfileTab({ client, onPatch, onDelete, onComposeEmail }) {
         <Field label="Email"><input value={client.email} onChange={e => onPatch({ email: e.target.value })} /></Field>
         <Field label="Phone"><input value={client.phone} onChange={e => onPatch({ phone: e.target.value })} /></Field>
       </div>
+
+      {(client.additionalEmails || []).map((email, i) => (
+        <div className="field-row" key={`email-${i}`}>
+          <Field label={`Additional email ${i + 2}`}>
+            <input value={email} onChange={e => {
+              const next = [...client.additionalEmails];
+              next[i] = e.target.value;
+              onPatch({ additionalEmails: next });
+            }} />
+          </Field>
+          <div style={{ display: "flex", alignItems: "flex-end", paddingBottom: 8 }}>
+            <button type="button" className="btn-danger btn btn-sm" onClick={() => onPatch({ additionalEmails: client.additionalEmails.filter((_, idx) => idx !== i) })}><Trash2 size={13} /></button>
+          </div>
+        </div>
+      ))}
+      <button type="button" className="btn btn-ghost btn-sm" style={{ marginBottom: 12 }} onClick={() => onPatch({ additionalEmails: [...(client.additionalEmails || []), ""] })}>
+        <Plus size={13} /> Add email
+      </button>
+
+      {(client.additionalPhones || []).map((phone, i) => (
+        <div className="field-row" key={`phone-${i}`}>
+          <Field label={`Additional phone ${i + 2}`}>
+            <input value={phone} onChange={e => {
+              const next = [...client.additionalPhones];
+              next[i] = e.target.value;
+              onPatch({ additionalPhones: next });
+            }} />
+          </Field>
+          <div style={{ display: "flex", alignItems: "flex-end", paddingBottom: 8 }}>
+            <button type="button" className="btn-danger btn btn-sm" onClick={() => onPatch({ additionalPhones: client.additionalPhones.filter((_, idx) => idx !== i) })}><Trash2 size={13} /></button>
+          </div>
+        </div>
+      ))}
+      <button type="button" className="btn btn-ghost btn-sm" style={{ marginBottom: 12 }} onClick={() => onPatch({ additionalPhones: [...(client.additionalPhones || []), ""] })}>
+        <Plus size={13} /> Add phone
+      </button>
+
       <Field label="Status">
         <select value={client.status} onChange={e => onPatch({ status: e.target.value })}><option value="lead">Lead</option><option value="active">Active</option><option value="inactive">Inactive</option></select>
       </Field>
