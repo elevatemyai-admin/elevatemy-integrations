@@ -67,7 +67,7 @@ module.exports = async (req, res) => {
       crmData.activityLog = [
         { id: crypto.randomBytes(4).toString("hex"), text: `Approved and sent AI-drafted reply to ${existing.name || existing.email}: "${subject}"`, ts: new Date().toISOString() },
         ...(crmData.activityLog || []),
-      ].slice(0, 50);
+      ].slice(0, 300);
     }
 
     crmData.pendingEmails = pending.filter((p) => p.id !== pendingEmailId);

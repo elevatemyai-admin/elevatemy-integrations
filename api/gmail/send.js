@@ -48,7 +48,7 @@ module.exports = async (req, res) => {
       crmData.activityLog = [
         { id: crypto.randomBytes(4).toString("hex"), text: `Emailed ${existing.name || existing.email}: "${subject}"`, ts: new Date().toISOString() },
         ...(crmData.activityLog || []),
-      ].slice(0, 50);
+      ].slice(0, 300);
       await setCache(CRM_DATA_KEY, crmData);
       logResult = { ok: true, loggedTo: existing.id };
     } else {

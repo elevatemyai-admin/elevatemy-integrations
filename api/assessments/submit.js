@@ -198,7 +198,7 @@ module.exports = async (req, res) => {
     crmData.activityLog = [
       { id: crypto.randomBytes(4).toString("hex"), text: activityText, ts: new Date().toISOString() },
       ...(crmData.activityLog || []),
-    ].slice(0, 50);
+    ].slice(0, 300);
     await setCache(CRM_DATA_KEY, crmData);
     crmResult = { ok: true, created: idx === -1 };
   } catch (e) {

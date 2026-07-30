@@ -116,7 +116,7 @@ module.exports = async (req, res) => {
 
       if (newActivityEntries.length) {
         const entries = newActivityEntries.map((text) => ({ id: crypto.randomBytes(4).toString("hex"), text, ts: new Date().toISOString() }));
-        crmData.activityLog = [...entries, ...(crmData.activityLog || [])].slice(0, 50);
+        crmData.activityLog = [...entries, ...(crmData.activityLog || [])].slice(0, 300);
       }
 
       await setCache(CRM_DATA_KEY, crmData);
