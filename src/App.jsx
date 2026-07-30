@@ -2,9 +2,9 @@ import React, { useState, useEffect, useMemo, useCallback } from "react";
 import {
   LayoutDashboard, Users, ListChecks, Plus, Search, X, ExternalLink, Github, Rocket,
   Newspaper, Share2, ClipboardCheck, CheckCircle2, Circle, AlertTriangle, Trash2,
-  ChevronRight, Save, Loader2, Calendar, User, Users2, DollarSign, Megaphone,
+  ChevronRight, ChevronDown, Save, Loader2, Calendar, Clock, History, Mail, User, Users2, DollarSign, Megaphone,
   Settings as SettingsIcon, RefreshCw, Wifi, WifiOff, TrendingUp, CreditCard, Activity,
-  Inbox, UserPlus, Check, Send, FileSignature, Eye, EyeOff
+  Inbox, UserPlus, Check, Send, FileSignature, Eye, EyeOff, Sparkles, Linkedin, Facebook, Copy, Link2
 } from "lucide-react";
 
 // ---------- constants ----------
@@ -106,6 +106,7 @@ const emptyClient = () => ({
   firstName: "",
   lastName: "",
   company: "",
+  website: "",
   email: "",
   phone: "",
   status: "lead",
@@ -116,6 +117,7 @@ const emptyClient = () => ({
   assessment: emptyAssessment(),
   newsletter: { subscribed: false, link: "" },
   zoho: { link: "", status: "not started", lastSent: "" },
+  engagementHistory: [],
   social: [],
   dashboard: { vercelUrl: "", githubUrl: "", lastInterview: "", notes: "" },
   tasks: [],
@@ -247,6 +249,9 @@ export default function App() {
   const [marketingCampaigns, setMarketingCampaigns] = useState([]);
   const [activityLog, setActivityLog] = useState([]);
   const [team, setTeam] = useState([]);
+  const [emailTemplates, setEmailTemplates] = useState([]);
+  const [pendingEmails, setPendingEmails] = useState([]);
+  const [marketingHub, setMarketingHub] = useState({ campaigns: [], contentItems: [] });
   const [loading, setLoading] = useState(true);
   const [saveState, setSaveState] = useState("idle");
 
@@ -257,6 +262,7 @@ export default function App() {
   const [selectedId, setSelectedId] = useState(null);
   const [detailTab, setDetailTab] = useState("profile");
   const [showAddModal, setShowAddModal] = useState(false);
+  const [emailComposerClient, setEmailComposerClient] = useState(null);
   const [taskOwnerFilter, setTaskOwnerFilter] = useState("all");
   const [taskAssigneeFilter, setTaskAssigneeFilter] = useState("all");
 
@@ -265,41 +271,64 @@ export default function App() {
   const [zohoError, setZohoError] = useState("");
   const [sourceData, setSourceData] = useState(() => Object.fromEntries(SOURCES.map(s => [s.key, { status: "unconfigured", items: [] }])));
 
+  const loadCrmData = useCallback(async () => {
+    try {
+      const res = await fetch("/api/crm/data");
+      const parsed = await res.json();
+      if (parsed) {
+        setClients((parsed.clients || []).map(c => {
+          const hasSplitName = c.firstName || c.lastName;
+          const nameParts = (c.name || "").trim().split(/\s+/).filter(Boolean);
+          const backfilledFirst = hasSplitName ? (c.firstName || "") : (nameParts[0] || "");
+          const backfilledLast = hasSplitName ? (c.lastName || "") : nameParts.slice(1).join(" ");
+          return {
+            ...emptyClient(), ...c,
+            firstName: backfilledFirst,
+            lastName: backfilledLast,
+            assessment: { ...emptyAssessment(), ...(c.assessment || {}) },
+            contract: { ...emptyContract(), ...(c.contract || {}) },
+          };
+        }));
+        setMarketingCampaigns(parsed.marketingCampaigns || []);
+        setActivityLog(parsed.activityLog || []);
+        setTeam(parsed.team || []);
+        setEmailTemplates(parsed.emailTemplates || []);
+        setPendingEmails(parsed.pendingEmails || []);
+        setMarketingHub(parsed.marketingHub || { campaigns: [], contentItems: [] });
+      }
+    } catch (e) { /* first run — nothing stored yet, or a refresh failed silently */ }
+  }, []);
+
   useEffect(() => {
     (async () => {
-      try {
-        const res = await fetch("/api/crm/data");
-        const parsed = await res.json();
-        if (parsed) {
-          setClients((parsed.clients || []).map(c => {
-            const hasSplitName = c.firstName || c.lastName;
-            const nameParts = (c.name || "").trim().split(/\s+/).filter(Boolean);
-            const backfilledFirst = hasSplitName ? (c.firstName || "") : (nameParts[0] || "");
-            const backfilledLast = hasSplitName ? (c.lastName || "") : nameParts.slice(1).join(" ");
-            return {
-              ...emptyClient(), ...c,
-              firstName: backfilledFirst,
-              lastName: backfilledLast,
-              assessment: { ...emptyAssessment(), ...(c.assessment || {}) },
-              contract: { ...emptyContract(), ...(c.contract || {}) },
-            };
-          }));
-          setMarketingCampaigns(parsed.marketingCampaigns || []);
-          setActivityLog(parsed.activityLog || []);
-          setTeam(parsed.team || []);
-        }
-      } catch (e) { /* first run — nothing stored yet */ }
-      finally { setLoading(false); }
+      await loadCrmData();
+      setLoading(false);
     })();
-  }, []);
+  }, [loadCrmData]);
 
   const persist = useCallback(async (next) => {
     setSaveState("saving");
     try {
+      // The CRM's save endpoint overwrites the whole stored blob rather
+      // than merging (see api/crm/data.js) — fine for fields this app
+      // owns (clients, tasks, etc.), but settings.gmailLastSyncTs,
+      // pendingEmails, and marketingHub are written by the daily sync job /
+      // AI drafting and approval steps running server-side, not by
+      // anything in this browser tab.
+      // Fetching the current server state right before writing (instead
+      // of trusting whatever this tab loaded at page-open) closes almost
+      // all of the window where a save from this tab could otherwise
+      // silently wipe out a backend-written field with stale data.
+      let serverOwned = {};
+      try {
+        const current = await fetch("/api/crm/data").then(r => r.json());
+        serverOwned = { settings: current?.settings, pendingEmails: current?.pendingEmails, marketingHub: current?.marketingHub };
+      } catch (e) { /* if this fails, fall through and save without them rather than blocking the save entirely */ }
+
       const res = await fetch("/api/crm/data", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(next),
+        body: JSON.stringify({ ...serverOwned, ...next }),
       });
       setSaveState(res.ok ? "saved" : "error");
     } catch (e) { setSaveState("error"); }
@@ -307,8 +336,8 @@ export default function App() {
   }, []);
 
   const snapshot = useCallback((overrides = {}) => ({
-    clients, marketingCampaigns, activityLog, team, ...overrides,
-  }), [clients, marketingCampaigns, activityLog, team]);
+    clients, marketingCampaigns, activityLog, team, emailTemplates, ...overrides,
+  }), [clients, marketingCampaigns, activityLog, team, emailTemplates]);
 
   function logActivity(text, list = activityLog) {
     const entry = { id: uid(), text, ts: new Date().toISOString() };
@@ -332,6 +361,84 @@ export default function App() {
       persist(snapshot({ marketingCampaigns: next, activityLog: nextLog }));
       return next;
     });
+  }
+  function updateEmailTemplates(updater) {
+    setEmailTemplates(prev => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      persist(snapshot({ emailTemplates: next }));
+      return next;
+    });
+  }
+  function addEmailTemplate(t) { updateEmailTemplates(prev => [{ id: uid(), ...t }, ...prev]); }
+  function removeEmailTemplate(id) { updateEmailTemplates(prev => prev.filter(t => t.id !== id)); }
+  function patchEmailTemplate(id, patch) { updateEmailTemplates(prev => prev.map(t => t.id === id ? { ...t, ...patch } : t)); }
+
+  async function approvePendingEmail(id, action, edits) {
+    try {
+      const res = await fetch("/api/gmail/approve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pendingEmailId: id, action, editedSubject: edits?.subject, editedBody: edits?.body }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || "Failed");
+      await loadCrmData();
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  }
+
+  async function createMarketingCampaign(data) {
+    try {
+      const res = await fetch("/api/marketing/campaigns", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
+      const result = await res.json();
+      if (!res.ok || !result.ok) throw new Error(result.error || "Failed");
+      await loadCrmData();
+      return { ok: true, campaign: result.campaign };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  }
+
+  async function generateMarketingContent({ campaignId, type, brief, targetTier }) {
+    try {
+      const res = await fetch("/api/marketing/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ campaignId, type, brief, targetTier }),
+      });
+      const result = await res.json();
+      if (!res.ok || !result.ok) throw new Error(result.error || "Generation failed");
+      await loadCrmData();
+      return { ok: true, item: result.item };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  }
+
+  async function approveMarketingContent(itemId, action, edits, extra) {
+    try {
+      const res = await fetch("/api/marketing/approve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          itemId, action,
+          editedSubject: edits?.subject, editedBody: edits?.body,
+          targetTier: extra?.targetTier, scheduledFor: extra?.scheduledFor,
+        }),
+      });
+      const result = await res.json();
+      if (!res.ok || !result.ok) throw new Error(result.error || "Failed");
+      await loadCrmData();
+      return { ok: true, ...result };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
   }
 
   const selectedClient = useMemo(() => clients.find(c => c.id === selectedId) || null, [clients, selectedId]);
@@ -521,8 +628,9 @@ export default function App() {
     { key: "overview", label: "Dashboard", icon: LayoutDashboard },
     { key: "clients", label: "Clients", icon: Users },
     { key: "import", label: "Import", icon: Inbox },
-    { key: "tasks", label: "Tasks & Campaigns", icon: ListChecks },
+    { key: "tasks", label: "Tasks", icon: ListChecks },
     { key: "marketing", label: "Marketing", icon: Megaphone },
+    { key: "content", label: "Content Studio", icon: Sparkles },
     { key: "settings", label: "Settings", icon: SettingsIcon },
   ];
 
@@ -530,19 +638,41 @@ export default function App() {
     <div className="crm-root">
       <style>{`
         .crm-root {
-          --ink:#161B22; --navy:#1B2430; --navy-soft:#232E3E; --cloud:#F5F6F4; --cloud-dim:#ECEEEA;
+          // Brand colors below now come from the official elevatemy.ai Brand
+          // Kit doc (uploaded July 23, 2026), verified by pixel-sampling the
+          // actual logo files inside it — not approximated from screenshots
+          // or emails, which is what earlier versions of this file did.
+          //
+          // The brand kit defines TWO variants: "Financial Services" (dark,
+          // for dark surfaces) and "General Business" (light, for light
+          // surfaces) — it explicitly says the GB variant "is not designed
+          // for dark surfaces." Since this CRM's sidebar IS a dark surface,
+          // the sidebar specifically uses the FP variant's exact colors
+          // (--sidebar-*), while the main light content area uses the GB
+          // variant (the --navy/--cloud/etc. tokens below). This isn't a
+          // style choice — it's what the brand kit's own usage rules call
+          // for given this app's actual dark/light layout.
+          //
+          // GB (General Business) palette — confirmed hex, light surfaces:
+          --ink:#1a1a1a; --navy:#1B3A6B; --navy-soft:#3D4E8A; --cloud:#F8F6F2; --cloud-dim:#EAEBEA;
+          --teal-accent:#00A99D; --pale-teal:#5BC8C0; --peach-accent:#E5C9B2;
           --card:#FFFFFF; --gold:#E8A33D; --gold-soft:#FBEBD2; --green:#4C7A5E; --green-soft:#E1EBE4;
           --coral:#C7554F; --coral-soft:#F5DEDC; --slate:#6B7280; --slate-line:#DADEE3;
+          // FP (Financial Services) palette — confirmed hex, used ONLY for
+          // the dark sidebar (background, hover states, wordmark, icon):
+          --sidebar-bg:#0B1120; --sidebar-icon-bg:#141E30; --sidebar-bar:#3D4E8A;
+          --sidebar-teal:#2DD4C8; --sidebar-text:#F1F5F9;
           font-family:'Inter',-apple-system,sans-serif; background:var(--cloud); color:var(--ink);
           min-height:100vh; display:flex; border-radius:12px; overflow:hidden;
         }
         .crm-root * { box-sizing:border-box; }
         .display { font-family:'Fraunces', Georgia, serif; }
-        .sidebar { width:220px; flex-shrink:0; background:var(--navy); color:#E7EAEE; display:flex; flex-direction:column; padding:20px 14px; }
+        .sidebar { width:220px; flex-shrink:0; background:var(--sidebar-bg); color:var(--sidebar-text); display:flex; flex-direction:column; padding:20px 14px; }
         .brand { display:flex; align-items:center; gap:10px; padding:6px 8px 22px; }
-        .brand-mark { width:30px; height:30px; border-radius:8px; background:linear-gradient(145deg,var(--gold),#C97F1F); display:flex; align-items:center; justify-content:center; color:#1B2430; font-weight:700; font-size:14px; }
-        .brand-name { font-size:15px; font-weight:600; }
-        .brand-sub { font-size:10.5px; color:#9AA5B1; margin-top:1px; }
+        .brand-mark { width:32px; height:32px; border-radius:8px; object-fit:contain; flex-shrink:0; }
+        .brand-name { font-size:16px; font-weight:700; color:var(--sidebar-text); letter-spacing:-0.01em; }
+        .brand-name .ai-suffix { font-weight:400; color:var(--sidebar-teal); }
+        .brand-sub { font-size:9.5px; color:#9AA5B1; margin-top:2px; text-transform:uppercase; letter-spacing:0.08em; font-weight:600; }
         .nav-item { display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:8px; cursor:pointer; font-size:13.5px; color:#C3CAD3; margin-bottom:2px; border:none; background:none; width:100%; text-align:left; }
         .nav-item:hover { background:var(--navy-soft); color:#fff; }
         .nav-item.active { background:var(--navy-soft); color:#fff; box-shadow:inset 3px 0 0 var(--gold); }
@@ -646,8 +776,8 @@ export default function App() {
       {/* Sidebar */}
       <div className="sidebar">
         <div className="brand">
-          <div className="brand-mark">EM</div>
-          <div><div className="brand-name">Elevatemy.ai</div><div className="brand-sub">Client CRM</div></div>
+          <img className="brand-mark" src="data:image/png;base64,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" alt="elevatemy.ai" />
+          <div><div className="brand-name">elevatemy<span className="ai-suffix">.ai</span></div><div className="brand-sub">Client CRM</div></div>
         </div>
         {NAV.map(n => (
           <button key={n.key} className={"nav-item" + (view === n.key ? " active" : "")} onClick={() => setView(n.key)}>
@@ -674,6 +804,7 @@ export default function App() {
               {view === "import" && "Import"}
               {view === "tasks" && "Tasks & Campaigns"}
               {view === "marketing" && "Marketing"}
+              {view === "content" && "Content Studio"}
               {view === "settings" && "Settings"}
             </h1>
             <p>
@@ -682,6 +813,7 @@ export default function App() {
               {view === "import" && "Pull in assessment takers, campaign responders, and subscribers from your connected systems."}
               {view === "tasks" && "What clients owe us, and what we owe clients."}
               {view === "marketing" && "CPA campaigns and prospecting activity, live from Zoho once connected."}
+              {view === "content" && "AI-drafted campaigns, emails, and social posts — review and approve, nothing goes out without you."}
               {view === "settings" && "Connect the CRM to your Vercel API routes."}
             </p>
           </div>
@@ -693,7 +825,8 @@ export default function App() {
             <div className="empty-state"><Loader2 className="spin" size={20} /></div>
           ) : view === "overview" ? (
             <OverviewView
-              clients={clients} revenue={revenue} activityLog={activityLog}
+              clients={clients} revenue={revenue} activityLog={activityLog} team={team}
+              pendingEmails={pendingEmails} onApprovePendingEmail={approvePendingEmail}
               assessedCount={assessedCount} activeCampaignCount={activeCampaignCount} overdueCount={overdueCount}
               marketingCampaigns={marketingCampaigns} zohoLive={zohoLive} zohoStatus={zohoStatus}
               onOpen={(id) => { setSelectedId(id); setView("clients"); setDetailTab("profile"); }}
@@ -704,7 +837,7 @@ export default function App() {
               apiBaseUrl={API_BASE} onToggleHidden={(id, hidden) => patchClient(id, { hidden })}
               onOpen={(id) => { setSelectedId(id); setDetailTab("profile"); }} total={clients.length} />
           ) : view === "import" ? (
-            <ImportView sourceData={sourceData} onRefresh={checkSources} apiConfigured={true}
+            <ImportView sourceData={sourceData} onRefresh={checkSources} apiConfigured={true} activityLog={activityLog}
               findClientByEmail={findClientByEmail} onAdd={addFromCandidate} onAddAll={addAllNew} />
           ) : view === "tasks" ? (
             <TasksView tasks={allTasks} ownerFilter={taskOwnerFilter} setOwnerFilter={setTaskOwnerFilter}
@@ -713,8 +846,17 @@ export default function App() {
           ) : view === "marketing" ? (
             <MarketingView campaigns={marketingCampaigns} zohoLive={zohoLive} zohoStatus={zohoStatus} onRefresh={checkZoho}
               onAdd={addCampaign} onPatch={patchCampaign} onRemove={removeCampaign} apiConfigured={true} />
+          ) : view === "content" ? (
+            <ContentStudioView
+              marketingHub={marketingHub}
+              team={team}
+              onCreateCampaign={createMarketingCampaign}
+              onGenerate={generateMarketingContent}
+              onApprove={approveMarketingContent}
+            />
           ) : (
-            <SettingsView zohoStatus={zohoStatus} zohoError={zohoError} onTest={checkZoho} team={team} onAddTeamMember={addTeamMember} onRemoveTeamMember={removeTeamMember} />
+            <SettingsView zohoStatus={zohoStatus} zohoError={zohoError} onTest={checkZoho} team={team} onAddTeamMember={addTeamMember} onRemoveTeamMember={removeTeamMember}
+              emailTemplates={emailTemplates} onAddTemplate={addEmailTemplate} onRemoveTemplate={removeEmailTemplate} onPatchTemplate={patchEmailTemplate} />
           )}
         </div>
       </div>
@@ -741,12 +883,13 @@ export default function App() {
                 { k: "dashboard", label: "Dashboard", icon: Github },
                 { k: "billing", label: "Billing", icon: CreditCard },
                 { k: "tasks", label: "Tasks", icon: ListChecks },
+                { k: "activity", label: "Activity", icon: History },
               ].map(t => (
                 <div key={t.k} className={"tab" + (detailTab === t.k ? " active" : "")} onClick={() => setDetailTab(t.k)}><t.icon size={13} /> {t.label}</div>
               ))}
             </div>
             <div className="drawer-body">
-              {detailTab === "profile" && <ProfileTab client={selectedClient} onPatch={(p) => patchClient(selectedClient.id, p)} onDelete={() => deleteClient(selectedClient.id)} />}
+              {detailTab === "profile" && <ProfileTab client={selectedClient} onPatch={(p) => patchClient(selectedClient.id, p)} onDelete={() => deleteClient(selectedClient.id)} onComposeEmail={() => setEmailComposerClient(selectedClient)} />}
               {detailTab === "assessment" && <AssessmentTab client={selectedClient} onPatch={(p) => patchNested(selectedClient.id, "assessment", p)} />}
               {detailTab === "campaigns" && (
                 <CampaignsTab client={selectedClient}
@@ -759,6 +902,7 @@ export default function App() {
               {detailTab === "dashboard" && <DashboardTab client={selectedClient} onPatch={(p) => patchNested(selectedClient.id, "dashboard", p)} />}
               {detailTab === "billing" && <BillingTab client={selectedClient} onAdd={(e) => addBilling(selectedClient.id, e)} onPatch={(bid, p) => patchBilling(selectedClient.id, bid, p)} onRemove={(bid) => removeBilling(selectedClient.id, bid)} onPatchClient={(p) => patchClient(selectedClient.id, p)} />}
               {detailTab === "tasks" && <ClientTasksTab client={selectedClient} team={team} onAdd={(t) => addTask(selectedClient.id, t)} onToggle={(tid) => toggleTask(selectedClient.id, tid)} onRemove={(tid) => removeTask(selectedClient.id, tid)} onPatch={(tid, patch) => patchTask(selectedClient.id, tid, patch)} />}
+              {detailTab === "activity" && <ClientActivityTab client={selectedClient} activityLog={activityLog} />}
             </div>
           </div>
         </div>
@@ -769,18 +913,144 @@ export default function App() {
           <div className="modal"><AddClientForm onCancel={() => setShowAddModal(false)} onSave={(data) => { addClient(data); setShowAddModal(false); }} /></div>
         </div>
       )}
+
+      {emailComposerClient && (
+        <div className="overlay center" onClick={(e) => { if (e.target === e.currentTarget) setEmailComposerClient(null); }}>
+          <div className="modal">
+            <EmailComposer
+              client={emailComposerClient}
+              onCancel={() => setEmailComposerClient(null)}
+              onSent={async () => { setEmailComposerClient(null); await loadCrmData(); }}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 // ---------- Overview / Dashboard ----------
 
-function OverviewView({ clients, revenue, activityLog, assessedCount, activeCampaignCount, overdueCount, marketingCampaigns, zohoLive, zohoStatus, onOpen }) {
+// Classifies an activity-log entry's free-text string into a labeled,
+// colored type. There's no structured "type" field on activity entries
+// (they're built as plain text from many different call sites — the CRM
+// itself, the assessment submit endpoint, and the Zoho/Beehiiv sync job),
+// so this matches on the known phrasing each source actually produces.
+// If a new activity message pattern gets added later and doesn't match
+// anything here, it safely falls into "Other" rather than breaking.
+function categorizeActivity(text) {
+  const t = text || "";
+  if (/completed the .* assessment/i.test(t)) return { key: "assessment", label: "Assessment completed", tone: "green" };
+  if (/emailed us:/i.test(t)) return { key: "email", label: "Emails received", tone: "gold" };
+  if (/^Emailed .*:/i.test(t)) return { key: "email_out", label: "Emails sent", tone: "navy" };
+  if (/^(Added|Merged) .* (from|data into)/i.test(t) || /upgraded to|tagged CPA Lead|Corrected name for|Renamed \d+ existing/i.test(t)) return { key: "imported", label: "Imported / synced", tone: "navy" };
+  if (/^Completed task/i.test(t)) return { key: "task", label: "Tasks", tone: "gold" };
+  if (/^Added client|^Removed client/i.test(t)) return { key: "client", label: "Client changes", tone: "slate" };
+  if (/^Logged \$/i.test(t)) return { key: "billing", label: "Billing", tone: "green" };
+  if (/^Added marketing campaign/i.test(t)) return { key: "campaign", label: "Campaigns", tone: "gold" };
+  if (/^Added team member|^Removed team member/i.test(t)) return { key: "team", label: "Team", tone: "slate" };
+  return { key: "other", label: "Other", tone: "slate" };
+}
+
+// Simple expand/collapse section with a colored count pill in the header.
+// Used anywhere we group a list into labeled buckets (activity feed, due
+// soon, tasks-by-client) so the same look/interaction is consistent
+// everywhere rather than rebuilding this per-section.
+function CollapsibleGroup({ label, tone = "slate", count, defaultOpen = true, children }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div style={{ marginBottom: 10, border: "1px solid var(--slate-line, #E4E7EC)", borderRadius: 10, overflow: "hidden" }}>
+      <div
+        onClick={() => setOpen(o => !o)}
+        style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", cursor: "pointer", background: "var(--cloud-dim, #ECEEEA)", userSelect: "none" }}
+      >
+        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        <Pill tone={tone}>{label}</Pill>
+        <span style={{ fontSize: 12, color: "var(--slate)" }}>{count}</span>
+      </div>
+      {open && <div style={{ padding: "4px 12px" }}>{children}</div>}
+    </div>
+  );
+}
+
+// Buckets a task's due date into an urgency tag used for color-coding
+// within the Due Soon groups. Reuses the existing isOverdue() logic so
+// "overdue" stays consistent with the rest of the app.
+function urgencyOf(t) {
+  if (isOverdue(t)) return { label: "overdue", tone: "coral" };
+  if (!t.dueDate) return { label: "no due date", tone: "slate" };
+  const due = new Date(t.dueDate);
+  const today = new Date(todayISO());
+  const diffDays = Math.round((due - today) / 86400000);
+  if (diffDays <= 0) return { label: "today", tone: "gold" };
+  if (diffDays <= 7) return { label: "this week", tone: "navy" };
+  return { label: "later", tone: "slate" };
+}
+
+function PendingEmailCard({ draft, clients, onOpen, onApprove }) {
+  const client = clients.find(c => c.id === draft.clientId);
+  const [editing, setEditing] = useState(false);
+  const [subject, setSubject] = useState(draft.subject);
+  const [body, setBody] = useState(draft.body);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function handle(action) {
+    setBusy(true); setError("");
+    const result = await onApprove(draft.id, action, editing ? { subject, body } : undefined);
+    setBusy(false);
+    if (!result.ok) setError(result.error);
+  }
+
+  return (
+    <div className="card" style={{ padding: 14, marginBottom: 10, borderLeft: "3px solid var(--coral)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+        <div>
+          <div style={{ fontSize: 12.5, color: "var(--slate)" }}>
+            AI-drafted reply to <span className="client-name" style={{ cursor: client ? "pointer" : "default" }} onClick={() => client && onOpen(client.id)}>{client ? clientDisplayName(client) : "Unknown client"}</span>
+            {draft.sourceSubject && <> — re: "{draft.sourceSubject}"</>}
+          </div>
+        </div>
+        <span style={{ fontSize: 11, color: "var(--slate)" }}>{timeAgo(draft.createdAt)}</span>
+      </div>
+
+      {editing ? (
+        <>
+          <Field label="Subject"><input value={subject} onChange={e => setSubject(e.target.value)} /></Field>
+          <Field label="Body"><textarea rows={6} value={body} onChange={e => setBody(e.target.value)} style={{ width: "100%", resize: "vertical" }} /></Field>
+        </>
+      ) : (
+        <>
+          <div className="task-title" style={{ marginBottom: 4 }}>{draft.subject}</div>
+          <div style={{ fontSize: 12.5, color: "var(--slate)", whiteSpace: "pre-wrap" }}>{draft.body}</div>
+        </>
+      )}
+
+      {error && <div style={{ fontSize: 12, color: "var(--coral)", marginTop: 8 }}>{error}</div>}
+
+      <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+        <button className="btn btn-gold btn-sm" disabled={busy} onClick={() => handle("approve")}>
+          {busy ? <Loader2 size={13} className="spin" /> : <Check size={13} />} Approve & send
+        </button>
+        <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => setEditing(e => !e)}>
+          {editing ? "Cancel edit" : "Edit first"}
+        </button>
+        <button className="btn btn-danger btn-sm" disabled={busy} onClick={() => handle("reject")}>
+          <X size={13} /> Reject
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function OverviewView({ clients, revenue, activityLog, team, pendingEmails, onApprovePendingEmail, assessedCount, activeCampaignCount, overdueCount, marketingCampaigns, zohoLive, zohoStatus, onOpen }) {
   const upcoming = useMemo(() => {
     const list = [];
     clients.forEach(c => (c.tasks || []).forEach(t => { if (t.status !== "done") list.push({ ...t, clientName: clientDisplayName(c) }); }));
-    return list.sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999")).slice(0, 6);
+    return list.sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999"));
   }, [clients]);
+
+  function memberName(id) { return (team || []).find(m => m.id === id)?.name || ""; }
 
   const marketing = zohoStatus === "live" ? zohoLive : marketingCampaigns;
   const totalSpend = marketing.reduce((s, c) => s + (Number(c.spend) || 0), 0);
@@ -789,6 +1059,19 @@ function OverviewView({ clients, revenue, activityLog, assessedCount, activeCamp
 
   return (
     <>
+      {(pendingEmails || []).length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <div className="section-title" style={{ color: "var(--coral)" }}>
+            <AlertTriangle size={14} /> Pending email approvals ({pendingEmails.length})
+          </div>
+          <div>
+            {pendingEmails.map(p => (
+              <PendingEmailCard key={p.id} draft={p} clients={clients} onOpen={onOpen} onApprove={onApprovePendingEmail} />
+            ))}
+          </div>
+        </div>
+      )}
+
       <div style={{ display: "flex", gap: 10, marginBottom: 18 }}>
         <a href="https://campaigns.zoho.com/campaigns/org930482684/home.do" target="_blank" rel="noreferrer" className="btn btn-ghost btn-sm">
           <Rocket size={13} /> Open Zoho Campaigns <ExternalLink size={11} />
@@ -829,26 +1112,61 @@ function OverviewView({ clients, revenue, activityLog, assessedCount, activeCamp
           </div>
 
           <div className="section-title">Due soon</div>
-          <div className="card" style={{ padding: "6px 16px" }}>
-            {upcoming.length === 0 ? <div className="empty-state" style={{ padding: 24 }}>Nothing on the horizon.</div> : upcoming.map(t => (
-              <div className="task-row" key={t.id}>
-                <span className="task-check"><Circle size={16} /></span>
-                <div style={{ flex: 1 }}>
-                  <div className="task-title">{t.title}</div>
-                  <div className="task-meta"><User size={11} /> {t.clientName} · owed by {t.owner === "client" ? "client" : "us"}</div>
-                </div>
-                <Pill tone={isOverdue(t) ? "coral" : "slate"}>{fmtDate(t.dueDate)}</Pill>
-              </div>
-            ))}
+          <div style={{ marginBottom: 24 }}>
+            {upcoming.length === 0 ? (
+              <div className="card empty-state" style={{ padding: 24 }}>Nothing on the horizon.</div>
+            ) : (() => {
+              const groups = new Map();
+              upcoming.forEach(t => {
+                const memberKey = t.assignedTo || "unassigned";
+                const label = t.assignedTo ? (memberName(t.assignedTo) || "Unknown") : "Unassigned";
+                if (!groups.has(memberKey)) groups.set(memberKey, { label, items: [] });
+                groups.get(memberKey).items.push(t);
+              });
+              // Unassigned sorts last — assigned work is what you're grouping to prioritize.
+              const sortedGroups = Array.from(groups.values()).sort((a, b) => a.label === "Unassigned" ? 1 : b.label === "Unassigned" ? -1 : a.label.localeCompare(b.label));
+              return sortedGroups.map(g => (
+                <CollapsibleGroup key={g.label} label={g.label} tone={g.items.some(isOverdue) ? "coral" : "navy"} count={g.items.length}>
+                  {g.items.map(t => {
+                    const u = urgencyOf(t);
+                    return (
+                      <div className="task-row" key={t.id}>
+                        <span className="task-check"><Circle size={16} /></span>
+                        <div style={{ flex: 1 }}>
+                          <div className="task-title">{t.title}</div>
+                          <div className="task-meta"><User size={11} /> {t.clientName} · owed by {t.owner === "client" ? "client" : "us"}{t.blockStart && <> · working {fmtDate(t.blockStart)}–{fmtDate(t.blockEnd)}</>}</div>
+                        </div>
+                        <Pill tone={u.tone}>{u.label}</Pill>
+                        {t.dueDate && <Pill tone="slate">{fmtDate(t.dueDate)}</Pill>}
+                      </div>
+                    );
+                  })}
+                </CollapsibleGroup>
+              ));
+            })()}
           </div>
         </div>
 
         <div>
           <div className="section-title">Current activity</div>
-          <div className="card" style={{ padding: "6px 16px", marginBottom: 24 }}>
-            {activityLog.length === 0 ? <div className="empty-state" style={{ padding: 24 }}>Activity will show up here as you use the CRM.</div> : activityLog.slice(0, 10).map(a => (
-              <div className="activity-row" key={a.id}><span className="activity-dot" /><span>{a.text}</span><span className="activity-time">{timeAgo(a.ts)}</span></div>
-            ))}
+          <div style={{ marginBottom: 24 }}>
+            {activityLog.length === 0 ? (
+              <div className="card empty-state" style={{ padding: 24 }}>Activity will show up here as you use the CRM.</div>
+            ) : (() => {
+              const groups = new Map();
+              activityLog.forEach(a => {
+                const cat = categorizeActivity(a.text);
+                if (!groups.has(cat.key)) groups.set(cat.key, { ...cat, items: [] });
+                groups.get(cat.key).items.push(a);
+              });
+              return Array.from(groups.values()).map(g => (
+                <CollapsibleGroup key={g.key} label={g.label} tone={g.tone} count={g.items.length} defaultOpen={g.key !== "other"}>
+                  {g.items.map(a => (
+                    <div className="activity-row" key={a.id}><span className="activity-dot" /><span>{a.text}</span><span className="activity-time">{timeAgo(a.ts)}</span></div>
+                  ))}
+                </CollapsibleGroup>
+              ));
+            })()}
           </div>
 
           <div className="section-title">Prospecting snapshot {zohoStatus === "live" && <Pill tone="green">live from Zoho</Pill>}</div>
@@ -1054,6 +1372,21 @@ function TasksView({ tasks, ownerFilter, setOwnerFilter, team, assigneeFilter, s
     return (a.dueDate || "9999").localeCompare(b.dueDate || "9999");
   });
   function memberName(id) { return (team || []).find(m => m.id === id)?.name || ""; }
+
+  const groups = useMemo(() => {
+    const map = new Map();
+    filtered.forEach(t => {
+      if (!map.has(t.clientId)) map.set(t.clientId, { clientName: t.clientName, items: [] });
+      map.get(t.clientId).items.push(t);
+    });
+    // Clients with any overdue task float to the top — that's what needs attention first.
+    return Array.from(map.values()).sort((a, b) => {
+      const ao = a.items.some(isOverdue) ? 0 : 1, bo = b.items.some(isOverdue) ? 0 : 1;
+      if (ao !== bo) return ao - bo;
+      return (a.clientName || "").localeCompare(b.clientName || "");
+    });
+  }, [filtered]);
+
   return (
     <>
       <div className="toolbar">
@@ -1067,18 +1400,26 @@ function TasksView({ tasks, ownerFilter, setOwnerFilter, team, assigneeFilter, s
         </select>
         <div style={{ fontSize: 12, color: "var(--slate)" }}>{filtered.filter(t => t.status !== "done").length} open</div>
       </div>
-      <div className="card" style={{ padding: "6px 16px" }}>
-        {filtered.length === 0 ? <div className="empty-state"><div className="display">No tasks yet</div>Add tasks from a client's Tasks tab to track campaigns that keep everyone on track.</div> : filtered.map(t => (
-          <div className="task-row" key={t.id + t.clientId}>
-            <span className="task-check" onClick={() => onToggle(t.clientId, t.id)}>{t.status === "done" ? <CheckCircle2 size={16} /> : <Circle size={16} />}</span>
-            <div style={{ flex: 1, cursor: "pointer" }} onClick={() => onOpenClient(t.clientId)}>
-              <div className={"task-title" + (t.status === "done" ? " done" : "")}>{t.title}</div>
-              <div className="task-meta"><User size={11} /> {t.clientName} · <Pill tone={t.owner === "client" ? "gold" : "navy"}>{t.owner === "client" ? "client owes" : "we owe"}</Pill> {t.assignedTo && memberName(t.assignedTo) && <Pill tone="slate">{memberName(t.assignedTo)}</Pill>}</div>
+      {groups.length === 0 ? (
+        <div className="card empty-state"><div className="display">No tasks yet</div>Add tasks from a client's Tasks tab to track campaigns that keep everyone on track.</div>
+      ) : groups.map(g => (
+        <CollapsibleGroup key={g.clientName} label={g.clientName || "Unknown client"} tone={g.items.some(isOverdue) ? "coral" : "navy"} count={g.items.length}>
+          {g.items.map(t => (
+            <div className="task-row" key={t.id + t.clientId}>
+              <span className="task-check" onClick={() => onToggle(t.clientId, t.id)}>{t.status === "done" ? <CheckCircle2 size={16} /> : <Circle size={16} />}</span>
+              <div style={{ flex: 1, cursor: "pointer" }} onClick={() => onOpenClient(t.clientId)}>
+                <div className={"task-title" + (t.status === "done" ? " done" : "")}>{t.title}</div>
+                <div className="task-meta">
+                  <Pill tone={t.owner === "client" ? "gold" : "navy"}>{t.owner === "client" ? "client owes" : "we owe"}</Pill>
+                  {t.assignedTo && memberName(t.assignedTo) && <Pill tone="slate">{memberName(t.assignedTo)}</Pill>}
+                  {t.blockStart && <span>· <Clock size={11} /> work {fmtDate(t.blockStart)}–{fmtDate(t.blockEnd)}</span>}
+                </div>
+              </div>
+              {t.dueDate && <Pill tone={isOverdue(t) ? "coral" : "slate"}>{fmtDate(t.dueDate)}</Pill>}
             </div>
-            {t.dueDate && <Pill tone={isOverdue(t) ? "coral" : "slate"}>{fmtDate(t.dueDate)}</Pill>}
-          </div>
-        ))}
-      </div>
+          ))}
+        </CollapsibleGroup>
+      ))}
     </>
   );
 }
@@ -1179,9 +1520,434 @@ function CampaignForm({ onSave, onCancel, initial }) {
   );
 }
 
+// ---------- Content Studio ----------
+
+// Friendly tier names the frontend is allowed to know about — never the
+// actual Zoho list keys behind them (those are env-var secrets, resolved
+// server-side in api/marketing/approve.js via lib/zoho.js's TIER_LIST_KEYS).
+const CONTENT_TARGET_TIERS = [
+  { group: "General Business", tiers: ["Exploring", "Building", "Emerging", "AI-Ready"] },
+  { group: "Financial Services", tiers: ["Early Stage", "Developing", "Intermediate", "Advanced"] },
+];
+
+const CONTENT_TYPE_LABELS = {
+  email: "Email",
+  linkedin_post: "LinkedIn post",
+  facebook_post: "Facebook post",
+};
+
+function NewCampaignForm({ team, onCreate, onDone }) {
+  const [name, setName] = useState("");
+  const [goal, setGoal] = useState("");
+  const [audience, setAudience] = useState("");
+  const [notes, setNotes] = useState("");
+  const [owner, setOwner] = useState("");
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(e) {
+    e.preventDefault();
+    if (!name.trim()) return;
+    setBusy(true); setError("");
+    const result = await onCreate({ name: name.trim(), goal, audience, notes, owner, startDate, endDate });
+    setBusy(false);
+    if (!result.ok) { setError(result.error); return; }
+    onDone();
+  }
+
+  return (
+    <form onSubmit={submit} className="card" style={{ padding: 16, marginBottom: 16 }}>
+      <Field label="Campaign name"><input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Q3 Referral Push" /></Field>
+      <div className="field-row">
+        <Field label="Owner (optional)">
+          <select value={owner} onChange={e => setOwner(e.target.value)}>
+            <option value="">Unassigned</option>
+            {(team || []).map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+          </select>
+        </Field>
+        <Field label="Goal (optional)"><input value={goal} onChange={e => setGoal(e.target.value)} placeholder="e.g. Re-engage stalled FP leads" /></Field>
+      </div>
+      <div className="field-row">
+        <Field label="Start date (optional)"><input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} /></Field>
+        <Field label="End date (optional)"><input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} /></Field>
+      </div>
+      <Field label="Audience (optional)"><input value={audience} onChange={e => setAudience(e.target.value)} placeholder="e.g. FP leads, Building/Emerging tier" /></Field>
+      <Field label="Notes (optional)"><textarea rows={2} value={notes} onChange={e => setNotes(e.target.value)} style={{ width: "100%", resize: "vertical" }} /></Field>
+      {error && <div style={{ fontSize: 12, color: "var(--coral)", marginBottom: 8 }}>{error}</div>}
+      <div style={{ display: "flex", gap: 8 }}>
+        <button type="submit" className="btn btn-gold btn-sm" disabled={busy || !name.trim()}>
+          {busy ? <Loader2 size={13} className="spin" /> : <Save size={13} />} Create campaign
+        </button>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={onDone}>Cancel</button>
+      </div>
+    </form>
+  );
+}
+
+function GenerateContentForm({ campaigns, lockedCampaignId, onGenerate }) {
+  const [campaignId, setCampaignId] = useState("");
+  const [type, setType] = useState("email");
+  const [brief, setBrief] = useState("");
+  const [targetTier, setTargetTier] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [lastResult, setLastResult] = useState(null);
+
+  async function submit(e) {
+    e.preventDefault();
+    setBusy(true); setError(""); setLastResult(null);
+    const result = await onGenerate({ campaignId: lockedCampaignId || campaignId || null, type, brief, targetTier: type === "email" ? targetTier : undefined });
+    setBusy(false);
+    if (!result.ok) { setError(result.error); return; }
+    setLastResult(result.item);
+    setBrief("");
+  }
+
+  return (
+    <form onSubmit={submit} className="card" style={{ padding: 16, marginBottom: 16 }}>
+      <div className="task-title" style={{ marginBottom: 10 }}>Generate new content</div>
+      <div style={{ display: "flex", gap: 12 }}>
+        {!lockedCampaignId && (
+          <div style={{ flex: 1 }}>
+            <Field label="Campaign (optional)">
+              <select value={campaignId} onChange={e => setCampaignId(e.target.value)}>
+                <option value="">No campaign — standalone</option>
+                {campaigns.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </Field>
+          </div>
+        )}
+        <div style={{ flex: 1 }}>
+          <Field label="Type">
+            <select value={type} onChange={e => setType(e.target.value)}>
+              <option value="email">Email</option>
+              <option value="linkedin_post">LinkedIn post</option>
+              <option value="facebook_post">Facebook post</option>
+            </select>
+          </Field>
+        </div>
+      </div>
+      {type === "email" && (
+        <Field label="Target audience" hint="Which tier's list this email will send to — resolved to the real Zoho list server-side.">
+          <select value={targetTier} onChange={e => setTargetTier(e.target.value)}>
+            <option value="">Choose a tier…</option>
+            {CONTENT_TARGET_TIERS.map(g => (
+              <optgroup key={g.group} label={g.group}>
+                {g.tiers.map(t => <option key={t} value={t}>{t}</option>)}
+              </optgroup>
+            ))}
+          </select>
+        </Field>
+      )}
+      <Field label="Brief / topic">
+        <textarea rows={3} value={brief} onChange={e => setBrief(e.target.value)} style={{ width: "100%", resize: "vertical" }}
+          placeholder="What should this piece be about? e.g. 'Re-engage leads who completed the assessment 60+ days ago but haven't booked a call.'" />
+      </Field>
+      {error && <div style={{ fontSize: 12, color: "var(--coral)", marginBottom: 8 }}>{error}</div>}
+      {lastResult && <div style={{ fontSize: 12, color: "var(--green)", marginBottom: 8 }}>Drafted — check the approval queue below.</div>}
+      <button type="submit" className="btn btn-gold btn-sm" disabled={busy}>
+        {busy ? <Loader2 size={13} className="spin" /> : <Sparkles size={13} />} Generate draft
+      </button>
+    </form>
+  );
+}
+
+function MarketingContentCard({ item, campaigns, onApprove }) {
+  const campaign = campaigns.find(c => c.id === item.campaignId);
+  const [editing, setEditing] = useState(false);
+  const [subject, setSubject] = useState(item.subject);
+  const [body, setBody] = useState(item.body);
+  const [targetTier, setTargetTier] = useState(item.targetTier || "");
+  const [scheduledFor, setScheduledFor] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [result, setResult] = useState(null);
+
+  async function handle(action) {
+    setBusy(true); setError(""); setResult(null);
+    const res = await onApprove(
+      item.id, action,
+      editing ? { subject, body } : undefined,
+      { targetTier: item.type === "email" ? targetTier : undefined, scheduledFor: scheduledFor || undefined }
+    );
+    setBusy(false);
+    if (!res.ok) { setError(res.error); return; }
+    setResult(res);
+  }
+
+  const typeIcon = item.type === "linkedin_post" ? <Linkedin size={13} /> : item.type === "facebook_post" ? <Facebook size={13} /> : <Mail size={13} />;
+
+  return (
+    <div className="card" style={{ padding: 14, marginBottom: 10, borderLeft: "3px solid var(--gold)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <Pill tone="gold">{typeIcon} {CONTENT_TYPE_LABELS[item.type] || item.type}</Pill>
+          {campaign && <span style={{ fontSize: 12, color: "var(--slate)" }}>{campaign.name}</span>}
+        </div>
+        <span style={{ fontSize: 11, color: "var(--slate)" }}>{timeAgo(item.createdAt)}</span>
+      </div>
+
+      {editing ? (
+        <>
+          {item.type === "email" && <Field label="Subject"><input value={subject} onChange={e => setSubject(e.target.value)} /></Field>}
+          <Field label="Body"><textarea rows={7} value={body} onChange={e => setBody(e.target.value)} style={{ width: "100%", resize: "vertical" }} /></Field>
+        </>
+      ) : (
+        <>
+          {item.type === "email" && <div className="task-title" style={{ marginBottom: 4 }}>{item.subject}</div>}
+          <div style={{ fontSize: 12.5, color: "var(--slate)", whiteSpace: "pre-wrap" }}>{item.body}</div>
+        </>
+      )}
+
+      {item.type === "email" && (
+        <div style={{ marginTop: 10 }}>
+          <Field label="Target tier (required to send)">
+            <select value={targetTier} onChange={e => setTargetTier(e.target.value)}>
+              <option value="">Choose a tier…</option>
+              {CONTENT_TARGET_TIERS.map(g => (
+                <optgroup key={g.group} label={g.group}>
+                  {g.tiers.map(t => <option key={t} value={t}>{t}</option>)}
+                </optgroup>
+              ))}
+            </select>
+          </Field>
+          <Field label="Schedule for (optional — leave blank to send immediately on approval)">
+            <input type="datetime-local" value={scheduledFor} onChange={e => setScheduledFor(e.target.value)} />
+          </Field>
+        </div>
+      )}
+
+      {error && <div style={{ fontSize: 12, color: "var(--coral)", marginTop: 8 }}>{error}</div>}
+
+      {result && result.postLink && (
+        <div style={{ fontSize: 12, color: "var(--ink)", background: "var(--cloud-dim)", padding: 10, borderRadius: 8, marginTop: 8 }}>
+          <div style={{ marginBottom: 6 }}>{result.note}</div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => navigator.clipboard?.writeText(result.body || body)}>
+              <Copy size={12} /> Copy text
+            </button>
+            <a className="btn btn-ghost btn-sm" href={result.postLink} target="_blank" rel="noopener noreferrer"><Link2 size={12} /> Open composer</a>
+          </div>
+        </div>
+      )}
+      {result && result.action === "sent" && <div style={{ fontSize: 12, color: "var(--green)", marginTop: 8 }}>Sent via Zoho — campaign key {result.campaignKey}</div>}
+      {result && result.action === "scheduled" && <div style={{ fontSize: 12, color: "var(--green)", marginTop: 8 }}>Scheduled via Zoho — campaign key {result.campaignKey}</div>}
+      {result && result.note && !result.postLink && <div style={{ fontSize: 12, color: "var(--gold)", marginTop: 8 }}>{result.note}</div>}
+
+      <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+        <button className="btn btn-gold btn-sm" disabled={busy} onClick={() => handle("approve")}>
+          {busy ? <Loader2 size={13} className="spin" /> : <Check size={13} />} Approve{item.type === "email" ? (scheduledFor ? " & schedule" : " & send") : ""}
+        </button>
+        <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => setEditing(e => !e)}>
+          {editing ? "Cancel edit" : "Edit first"}
+        </button>
+        <button className="btn btn-danger btn-sm" disabled={busy} onClick={() => handle("reject")}>
+          <X size={13} /> Reject
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function contentTypeIcon(type) {
+  if (type === "linkedin_post") return <Linkedin size={16} />;
+  if (type === "facebook_post") return <Facebook size={16} />;
+  return <Mail size={16} />;
+}
+
+// A grid of small "asset" tiles for one campaign — the visual, HubSpot
+// Marketing-Studio-like board view. Clicking a tile expands the full
+// MarketingContentCard (approve/edit/reject, or just details if already
+// sent) right below the grid, rather than a true draggable canvas — gets
+// the same "see everything in this campaign at a glance" feel without the
+// much larger engineering cost of freeform positioning/connecting lines.
+// Branded cover gradient per content type — navy stays constant as the
+// anchor (reinforcing brand consistency across every tile), the second
+// color varies by type so tiles are visually distinguishable at a glance.
+// All colors are the confirmed real brand-kit values, nothing invented.
+function contentCoverGradient(type) {
+  if (type === "linkedin_post") return "linear-gradient(135deg, var(--navy), var(--teal-accent))";
+  if (type === "facebook_post") return "linear-gradient(135deg, var(--navy), var(--peach-accent))";
+  return "linear-gradient(135deg, var(--navy), var(--navy-soft))"; // email
+}
+
+// The real 3-bar icon motif, reused here as a large, faded decorative
+// watermark on each tile's cover — ties every card back to the actual
+// brand mark rather than using generic platform-icon-only covers.
+function CoverWatermark() {
+  return (
+    <svg width="72" height="72" viewBox="0 0 24 24" fill="none" style={{ position: "absolute", right: -10, bottom: -14, opacity: 0.16 }}>
+      <rect x="5" y="6.5" width="14" height="2.6" rx="1.3" fill="#fff" />
+      <rect x="5" y="10.7" width="14" height="2.6" rx="1.3" fill="#fff" />
+      <rect x="5" y="14.9" width="14" height="2.6" rx="1.3" fill="#fff" />
+    </svg>
+  );
+}
+
+function CampaignBoard({ campaign, items, onApprove }) {
+  const [expandedId, setExpandedId] = useState(null);
+  const expandedItem = items.find(i => i.id === expandedId);
+
+  const statusTone = { pending_approval: "gold", approved: "navy", scheduled: "navy", sent: "green", rejected: "coral" };
+
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 14, marginBottom: 16 }}>
+        {items.length === 0 ? (
+          <div className="empty-state" style={{ padding: 20, gridColumn: "1 / -1" }}>No content in this campaign yet — use the form below to generate the first piece.</div>
+        ) : items.map(item => (
+          <div
+            key={item.id}
+            className="card"
+            style={{ overflow: "hidden", cursor: "pointer", border: expandedId === item.id ? "2px solid var(--gold)" : undefined }}
+            onClick={() => setExpandedId(id => id === item.id ? null : item.id)}
+          >
+            <div style={{ position: "relative", height: 64, background: contentCoverGradient(item.type), padding: "10px 12px", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+              <CoverWatermark />
+              <div style={{ display: "flex", alignItems: "center", gap: 6, color: "#fff", position: "relative", zIndex: 1 }}>
+                {contentTypeIcon(item.type)}
+                <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em" }}>{CONTENT_TYPE_LABELS[item.type] || item.type}</span>
+              </div>
+              <div style={{ position: "relative", zIndex: 1 }}><Pill tone={statusTone[item.status] || "slate"}>{item.status.replace("_", " ")}</Pill></div>
+            </div>
+            <div style={{ padding: 12 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 4, overflow: "hidden", textOverflow: "ellipsis", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
+                {item.subject || item.body.slice(0, 60)}
+              </div>
+              {item.targetTier && <div style={{ fontSize: 11, color: "var(--slate)" }}>{item.targetTier}</div>}
+            </div>
+          </div>
+        ))}
+      </div>
+      {expandedItem && (
+        <div style={{ marginBottom: 20 }}>
+          <MarketingContentCard item={expandedItem} campaigns={[campaign]} onApprove={onApprove} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ContentStudioView({ marketingHub, team, onCreateCampaign, onGenerate, onApprove }) {
+  const [showNewCampaign, setShowNewCampaign] = useState(false);
+  const [viewingCampaignId, setViewingCampaignId] = useState(null);
+  const campaigns = marketingHub.campaigns || [];
+  const items = marketingHub.contentItems || [];
+
+  function memberName(id) { return (team || []).find(m => m.id === id)?.name || ""; }
+
+  const viewingCampaign = campaigns.find(c => c.id === viewingCampaignId);
+
+  if (viewingCampaign) {
+    const campaignItems = items.filter(i => i.campaignId === viewingCampaign.id && i.status !== "rejected");
+    return (
+      <div>
+        <button className="btn btn-ghost btn-sm" style={{ marginBottom: 14 }} onClick={() => setViewingCampaignId(null)}>
+          <ChevronRight size={13} style={{ transform: "rotate(180deg)" }} /> Back to campaigns
+        </button>
+        <div className="card" style={{ padding: 16, marginBottom: 20 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+            <div>
+              <div className="display" style={{ fontSize: 18 }}>{viewingCampaign.name}</div>
+              {viewingCampaign.goal && <div style={{ fontSize: 12.5, color: "var(--slate)", marginTop: 2 }}>{viewingCampaign.goal}</div>}
+            </div>
+            <Pill tone={viewingCampaign.status === "active" ? "green" : "slate"}>{viewingCampaign.status}</Pill>
+          </div>
+          <div style={{ display: "flex", gap: 18, marginTop: 12, fontSize: 12, color: "var(--slate)", flexWrap: "wrap" }}>
+            {viewingCampaign.owner && <span><User size={11} /> {memberName(viewingCampaign.owner) || "Unknown"}</span>}
+            {viewingCampaign.audience && <span>Audience: {viewingCampaign.audience}</span>}
+            {(viewingCampaign.startDate || viewingCampaign.endDate) && <span><Calendar size={11} /> {viewingCampaign.startDate ? fmtDate(viewingCampaign.startDate) : "—"} → {viewingCampaign.endDate ? fmtDate(viewingCampaign.endDate) : "—"}</span>}
+          </div>
+          {viewingCampaign.notes && <div style={{ fontSize: 12.5, marginTop: 10, color: "var(--ink)" }}>{viewingCampaign.notes}</div>}
+        </div>
+
+        <div className="section-title">Assets ({campaignItems.length})</div>
+        <CampaignBoard campaign={viewingCampaign} items={campaignItems} onApprove={onApprove} />
+
+        <div className="section-title">Add content to this campaign</div>
+        <GenerateContentForm campaigns={campaigns} lockedCampaignId={viewingCampaign.id} onGenerate={onGenerate} />
+      </div>
+    );
+  }
+
+  const pending = items.filter(i => i.status === "pending_approval" && !i.campaignId);
+  const others = items.filter(i => i.status !== "pending_approval" && i.status !== "rejected" && !i.campaignId);
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+        <div className="section-title" style={{ marginBottom: 0 }}>Campaigns</div>
+        {!showNewCampaign && (
+          <button className="btn btn-gold btn-sm" onClick={() => setShowNewCampaign(true)}><Plus size={13} /> New campaign</button>
+        )}
+      </div>
+
+      {showNewCampaign && <NewCampaignForm team={team} onCreate={onCreateCampaign} onDone={() => setShowNewCampaign(false)} />}
+
+      {campaigns.length === 0 ? (
+        <div className="empty-state" style={{ padding: 20, marginBottom: 20 }}>No campaigns yet — create one, or generate standalone content below.</div>
+      ) : (
+        <div className="card" style={{ padding: 8, marginBottom: 20, overflowX: "auto" }}>
+          <table className="ctable">
+            <thead><tr><th>Campaign</th><th>Owner</th><th>Notes</th><th>Start</th><th>End</th><th>Assets</th><th>Status</th></tr></thead>
+            <tbody>
+              {campaigns.map(c => {
+                const count = items.filter(i => i.campaignId === c.id && i.status !== "rejected").length;
+                return (
+                  <tr key={c.id} className="row-click" onClick={() => setViewingCampaignId(c.id)}>
+                    <td><div className="client-name" style={{ fontSize: 13.5 }}>{c.name}</div>{c.goal && <div className="client-sub">{c.goal}</div>}</td>
+                    <td style={{ fontSize: 12.5 }}>{memberName(c.owner) || "—"}</td>
+                    <td style={{ fontSize: 12, color: "var(--slate)", maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.notes || "—"}</td>
+                    <td style={{ fontSize: 12 }}>{c.startDate ? fmtDate(c.startDate) : "—"}</td>
+                    <td style={{ fontSize: 12 }}>{c.endDate ? fmtDate(c.endDate) : "—"}</td>
+                    <td style={{ fontSize: 12 }}>{count}</td>
+                    <td><Pill tone={c.status === "active" ? "green" : "slate"}>{c.status}</Pill></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="section-title">Generate standalone content</div>
+      <div style={{ fontSize: 12, color: "var(--slate)", marginTop: -6, marginBottom: 12 }}>Not part of a campaign — for one-off pieces. To add content to a specific campaign, click into it above.</div>
+      <GenerateContentForm campaigns={campaigns} onGenerate={onGenerate} />
+
+      <div className="section-title">Pending approval — standalone ({pending.length})</div>
+      {pending.length === 0 ? (
+        <div className="empty-state" style={{ padding: 20, marginBottom: 20 }}>Nothing waiting on you right now.</div>
+      ) : (
+        <div style={{ marginBottom: 20 }}>
+          {pending.map(item => <MarketingContentCard key={item.id} item={item} campaigns={campaigns} onApprove={onApprove} />)}
+        </div>
+      )}
+
+      {others.length > 0 && (
+        <>
+          <div className="section-title">Approved, scheduled &amp; sent — standalone</div>
+          <div className="card" style={{ padding: 4 }}>
+            {others.map(item => (
+              <div key={item.id} className="activity-row" style={{ padding: "10px 12px" }}>
+                <div>
+                  <div style={{ fontSize: 13 }}>{item.subject || item.body.slice(0, 60) + (item.body.length > 60 ? "…" : "")}</div>
+                  <div style={{ fontSize: 11, color: "var(--slate)" }}>{CONTENT_TYPE_LABELS[item.type] || item.type}{item.targetTier ? ` — ${item.targetTier}` : ""}</div>
+                </div>
+                <Pill tone={item.status === "sent" ? "green" : item.status === "scheduled" ? "navy" : "slate"}>{item.status}</Pill>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ---------- Import ----------
 
-function ImportView({ sourceData, onRefresh, apiConfigured, findClientByEmail, onAdd, onAddAll }) {
+function ImportView({ sourceData, onRefresh, apiConfigured, findClientByEmail, onAdd, onAddAll, activityLog }) {
   return (
     <>
       {!apiConfigured && (
@@ -1192,46 +1958,86 @@ function ImportView({ sourceData, onRefresh, apiConfigured, findClientByEmail, o
       )}
       {SOURCES.map(s => {
         const sd = sourceData[s.key] || { status: "unconfigured", items: [] };
-        const newCount = sd.items.filter(i => !findClientByEmail(i.email)).length;
+        const newItems = sd.items.filter(i => !findClientByEmail(i.email));
+        const addedItems = sd.items.filter(i => findClientByEmail(i.email));
+        // "Actions Taken" reuses the same activity log the rest of the CRM
+        // already writes to (addFromCandidate logs "Added X from..." /
+        // "Merged X data into..." on every action, and the Zoho/Beehiiv sync
+        // job logs its own entries the same way) — filtered here to just
+        // the entries that mention someone currently in this source, so it
+        // works as a per-source history without needing a separate log.
+        const sourceActions = (activityLog || []).filter(a => sd.items.some(i => i.email && a.text.includes(i.email)) || sd.items.some(i => i.name && a.text.includes(i.name)));
         return (
           <div key={s.key} style={{ marginBottom: 26 }}>
             <div className="section-title">
               <span style={{ display: "flex", alignItems: "center", gap: 8 }}><s.icon size={14} /> {s.label} <Pill tone="slate">{s.system}</Pill></span>
-              {sd.status === "live" && newCount > 0 && <button className="btn btn-gold btn-sm" onClick={() => onAddAll(s.key)}><UserPlus size={13} /> Add all new ({newCount})</button>}
+              {sd.status === "live" && newItems.length > 0 && <button className="btn btn-gold btn-sm" onClick={() => onAddAll(s.key)}><UserPlus size={13} /> Add all new ({newItems.length})</button>}
             </div>
-            <div className="card" style={{ padding: sd.items.length ? 8 : 16 }}>
-              {sd.status === "unconfigured" && <div style={{ padding: 16, fontSize: 12.5, color: "var(--slate)" }}>Not connected — expects <code>GET {"{base}"}{s.path}</code>.</div>}
-              {sd.status === "checking" && <div style={{ padding: 16, fontSize: 12.5, color: "var(--slate)", display: "flex", alignItems: "center", gap: 8 }}><Loader2 size={14} className="spin" /> Checking…</div>}
-              {sd.status === "error" && <div style={{ padding: 16, fontSize: 12.5, color: "var(--coral)" }}>Couldn't reach <code>{s.path}</code> at that base URL yet.</div>}
-              {sd.status === "live" && sd.items.length === 0 && <div style={{ padding: 16, fontSize: 12.5, color: "var(--slate)" }}>Connected — nothing new to pull in right now.</div>}
-              {sd.status === "live" && sd.items.length > 0 && (
-                <table className="ctable">
-                  <thead><tr><th>Name</th><th>Email</th><th>Detail</th><th></th></tr></thead>
-                  <tbody>
-                    {sd.items.map((item, idx) => {
-                      const existing = findClientByEmail(item.email);
-                      const detail = s.key === "assessments"
-                        ? [item.tier, item.overallScore != null ? `${item.overallScore}%` : null].filter(Boolean).join(" · ")
-                        : (item.campaignName || item.platform || "");
-                      return (
-                        <tr key={item.id || item.email || idx}>
-                          <td className="client-name" style={{ fontSize: 13.5 }}>{item.name || "—"}</td>
-                          <td style={{ fontSize: 12.5 }}>{item.email || "—"}</td>
-                          <td style={{ fontSize: 12.5, color: "var(--slate)" }}>{detail || "—"}</td>
-                          <td style={{ textAlign: "right" }}>
-                            {existing ? (
-                              <button className="btn btn-ghost btn-sm" onClick={() => onAdd(item, s.key)}><Check size={12} /> Merge into {existing.name || "client"}</button>
-                            ) : (
-                              <button className="btn btn-gold btn-sm" onClick={() => onAdd(item, s.key)}><UserPlus size={12} /> Add as client</button>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              )}
-            </div>
+
+            {sd.status === "unconfigured" && <div className="card" style={{ padding: 16, fontSize: 12.5, color: "var(--slate)" }}>Not connected — expects <code>GET {"{base}"}{s.path}</code>.</div>}
+            {sd.status === "checking" && <div className="card" style={{ padding: 16, fontSize: 12.5, color: "var(--slate)", display: "flex", alignItems: "center", gap: 8 }}><Loader2 size={14} className="spin" /> Checking…</div>}
+            {sd.status === "error" && <div className="card" style={{ padding: 16, fontSize: 12.5, color: "var(--coral)" }}>Couldn't reach <code>{s.path}</code> at that base URL yet.</div>}
+
+            {sd.status === "live" && (
+              <>
+                <CollapsibleGroup label="Imported" tone="navy" count={newItems.length} defaultOpen={newItems.length > 0}>
+                  {newItems.length === 0 ? <div className="empty-state" style={{ padding: 16 }}>Nothing new to pull in right now.</div> : (
+                    <table className="ctable">
+                      <thead><tr><th>Name</th><th>Email</th><th>Detail</th><th></th></tr></thead>
+                      <tbody>
+                        {newItems.map((item, idx) => {
+                          const detail = s.key === "assessments"
+                            ? [item.tier, item.overallScore != null ? `${item.overallScore}%` : null].filter(Boolean).join(" · ")
+                            : (item.campaignName || item.platform || "");
+                          return (
+                            <tr key={item.id || item.email || idx}>
+                              <td className="client-name" style={{ fontSize: 13.5 }}>{item.name || "—"}</td>
+                              <td style={{ fontSize: 12.5 }}>{item.email || "—"}</td>
+                              <td style={{ fontSize: 12.5, color: "var(--slate)" }}>{detail || "—"}</td>
+                              <td style={{ textAlign: "right" }}>
+                                <button className="btn btn-gold btn-sm" onClick={() => onAdd(item, s.key)}><UserPlus size={12} /> Add as client</button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  )}
+                </CollapsibleGroup>
+
+                <CollapsibleGroup label="Added" tone="green" count={addedItems.length} defaultOpen={false}>
+                  {addedItems.length === 0 ? <div className="empty-state" style={{ padding: 16 }}>None of these have been added as clients yet.</div> : (
+                    <table className="ctable">
+                      <thead><tr><th>Name</th><th>Email</th><th>Detail</th><th></th></tr></thead>
+                      <tbody>
+                        {addedItems.map((item, idx) => {
+                          const existing = findClientByEmail(item.email);
+                          const detail = s.key === "assessments"
+                            ? [item.tier, item.overallScore != null ? `${item.overallScore}%` : null].filter(Boolean).join(" · ")
+                            : (item.campaignName || item.platform || "");
+                          return (
+                            <tr key={item.id || item.email || idx}>
+                              <td className="client-name" style={{ fontSize: 13.5 }}>{item.name || "—"}</td>
+                              <td style={{ fontSize: 12.5 }}>{item.email || "—"}</td>
+                              <td style={{ fontSize: 12.5, color: "var(--slate)" }}>{detail || "—"}</td>
+                              <td style={{ textAlign: "right" }}>
+                                <button className="btn btn-ghost btn-sm" onClick={() => onAdd(item, s.key)}><Check size={12} /> Merge into {existing?.name || "client"}</button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  )}
+                </CollapsibleGroup>
+
+                <CollapsibleGroup label="Actions taken" tone="slate" count={sourceActions.length} defaultOpen={false}>
+                  {sourceActions.length === 0 ? <div className="empty-state" style={{ padding: 16 }}>No recorded actions for this source yet.</div> : sourceActions.map(a => (
+                    <div className="activity-row" key={a.id}><span className="activity-dot" /><span>{a.text}</span><span className="activity-time">{timeAgo(a.ts)}</span></div>
+                  ))}
+                </CollapsibleGroup>
+              </>
+            )}
           </div>
         );
       })}
@@ -1241,8 +2047,15 @@ function ImportView({ sourceData, onRefresh, apiConfigured, findClientByEmail, o
 
 // ---------- Settings ----------
 
-function SettingsView({ zohoStatus, zohoError, onTest, team, onAddTeamMember, onRemoveTeamMember }) {
+function SettingsView({ zohoStatus, zohoError, onTest, team, onAddTeamMember, onRemoveTeamMember, emailTemplates, onAddTemplate, onRemoveTemplate, onPatchTemplate }) {
   const [name, setName] = useState(""); const [email, setEmail] = useState(""); const [role, setRole] = useState("");
+  const [templateName, setTemplateName] = useState(""); const [templateBody, setTemplateBody] = useState("");
+  function submitTemplate(e) {
+    e.preventDefault();
+    if (!templateName.trim() || !templateBody.trim()) return;
+    onAddTemplate({ name: templateName.trim(), body: templateBody.trim() });
+    setTemplateName(""); setTemplateBody("");
+  }
   function submitTeam(e) {
     e.preventDefault();
     if (!name.trim()) return;
@@ -1270,6 +2083,26 @@ function SettingsView({ zohoStatus, zohoError, onTest, team, onAddTeamMember, on
             <div className="task-meta">{m.role}{m.role && m.email ? " · " : ""}{m.email}</div>
           </div>
           <button className="btn-danger btn btn-sm" onClick={() => onRemoveTeamMember(m.id)}><Trash2 size={13} /></button>
+        </div>
+      ))}
+
+      <div className="section-title" style={{ marginTop: 26 }}>Email templates</div>
+      <p style={{ fontSize: 12.5, color: "var(--slate)", marginTop: 0 }}>
+        These are inspiration for the AI drafting agent, not fill-in-the-blank text — when a client emails in, the agent
+        writes a genuine reply in the spirit of these templates rather than pasting them in verbatim.
+      </p>
+      <form onSubmit={submitTemplate} style={{ marginBottom: 14 }}>
+        <Field label="Template name"><input value={templateName} onChange={e => setTemplateName(e.target.value)} placeholder="e.g. Following up after a strategy call" /></Field>
+        <Field label="Body"><textarea rows={5} value={templateBody} onChange={e => setTemplateBody(e.target.value)} style={{ width: "100%", resize: "vertical" }} placeholder="Hi [First Name], great chatting today..." /></Field>
+        <button className="btn btn-primary btn-sm" type="submit"><Plus size={13} /> Add template</button>
+      </form>
+      {(emailTemplates || []).length === 0 ? <div className="empty-state" style={{ padding: 16 }}>No templates yet.</div> : (emailTemplates || []).map(t => (
+        <div className="task-row" key={t.id} style={{ alignItems: "flex-start" }}>
+          <div style={{ flex: 1 }}>
+            <div className="task-title">{t.name}</div>
+            <div className="task-meta" style={{ whiteSpace: "pre-wrap" }}>{t.body}</div>
+          </div>
+          <button className="btn-danger btn btn-sm" onClick={() => onRemoveTemplate(t.id)}><Trash2 size={13} /></button>
         </div>
       ))}
 
@@ -1311,7 +2144,161 @@ function SettingsView({ zohoStatus, zohoError, onTest, team, onAddTeamMember, on
 
 // ---------- drawer tabs ----------
 
-function ProfileTab({ client, onPatch, onDelete }) {
+// Which of the 8 Zoho Campaigns tier lists a client is in, derived from
+// their assessment path + tier rather than a separately-stored field —
+// this always stays correct automatically as their assessment data
+// changes, with no extra sync step needed.
+function zohoListName(client) {
+  const a = client.assessment;
+  if (!a || !a.completed || !a.tier) return null;
+  const prefix = a.path === "financial" ? "FP" : "General";
+  return `${prefix} - ${a.tier}`;
+}
+
+function engagementEventMeta(type) {
+  if (type === "click") return { label: "Email clicks", tone: "gold" };
+  if (type === "open") return { label: "Email opens", tone: "navy" };
+  if (type === "email_enrolled") return { label: "Nurture emails", tone: "green" };
+  if (type === "email_received") return { label: "Emails from them", tone: "gold" };
+  if (type === "email_sent") return { label: "Emails we sent", tone: "navy" };
+  return { label: "Other activity", tone: "slate" };
+}
+
+// Combines two different data sources into one unified, grouped timeline:
+//  1. Global activityLog entries that mention this client (same
+//     name/email-matching heuristic used in the Import tab's "Actions
+//     taken" section — there's no structured per-client link on log
+//     entries, so text matching is what we have) — covers tasks, billing,
+//     assessment completions, imports/merges.
+//  2. client.engagementHistory — real per-contact email open/click events,
+//     synced in from Zoho's Campaigns API (see lib/sync.js), plus a
+//     guaranteed "enrolled in nurture list" event logged directly by
+//     api/assessments/submit.js.
+// NOTE: open/click tracking is confirmed working for regular Zoho
+// Campaigns (CPA outreach, etc.) — it is NOT yet confirmed to work for the
+// new tier-based nurture emails, since those send via Zoho Workflows, a
+// different feature from Campaigns. Until that's verified, expect
+// "Nurture emails" (enrollment) to be reliable, but "Email opens/clicks"
+// on nurture emails specifically may not populate.
+function ClientActivityTab({ client, activityLog }) {
+  const relevantLog = useMemo(() => {
+    if (!client.name && !client.email) return [];
+    return (activityLog || []).filter(a => (client.email && a.text.includes(client.email)) || (client.name && a.text.includes(client.name)));
+  }, [activityLog, client.name, client.email]);
+
+  const combined = useMemo(() => {
+    const fromLog = relevantLog.map(a => ({ id: a.id, ts: a.ts, text: a.text, ...categorizeActivity(a.text) }));
+    const fromEngagement = (client.engagementHistory || []).map((e, i) => ({
+      id: `eng_${i}_${e.ts}`, ts: e.ts,
+      text: e.type === "email_enrolled" ? `Enrolled in ${e.campaignName}`
+        : e.type === "email_received" ? `Emailed us: "${e.campaignName}"`
+        : e.type === "email_sent" ? `We emailed them: "${e.campaignName}"`
+        : `${e.type === "click" ? "Clicked" : "Opened"} "${e.campaignName}"`,
+      // Deep link straight to the message in Gmail — only email events carry
+      // a real Gmail messageId (campaign click/open events don't have one).
+      // Uses account slot /u/0/ — if Tracy's elevatemy.ai account isn't the
+      // first signed-in Google account in her browser, this may land on the
+      // wrong account's inbox; there's no way to target a specific account
+      // by email address in this URL format, only by slot position.
+      gmailLink: (e.messageId && (e.type === "email_received" || e.type === "email_sent"))
+        ? `https://mail.google.com/mail/u/0/#all/${e.messageId}`
+        : null,
+      ...engagementEventMeta(e.type),
+    }));
+    return [...fromLog, ...fromEngagement].sort((a, b) => (b.ts || "").localeCompare(a.ts || ""));
+  }, [relevantLog, client.engagementHistory]);
+
+  const groups = useMemo(() => {
+    const map = new Map();
+    combined.forEach(item => {
+      if (!map.has(item.label)) map.set(item.label, { label: item.label, tone: item.tone, items: [] });
+      map.get(item.label).items.push(item);
+    });
+    return Array.from(map.values());
+  }, [combined]);
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 14 }}>
+        Everything tied to this client — task completions, billing, assessment activity, imports, and real email opens/clicks synced from Zoho.
+      </div>
+      {groups.length === 0 ? (
+        <div className="empty-state" style={{ padding: 20 }}>No activity recorded for this client yet.</div>
+      ) : groups.map(g => (
+        <CollapsibleGroup key={g.label} label={g.label} tone={g.tone} count={g.items.length}>
+          {g.items.map(item => (
+            <div className="activity-row" key={item.id}>
+              <span className="activity-dot" />
+              {item.gmailLink ? (
+                <a href={item.gmailLink} target="_blank" rel="noopener noreferrer" title="Open in Gmail">{item.text}</a>
+              ) : (
+                <span>{item.text}</span>
+              )}
+              <span className="activity-time">{timeAgo(item.ts)}</span>
+            </div>
+          ))}
+        </CollapsibleGroup>
+      ))}
+    </div>
+  );
+}
+
+// Compose + send modal — calls the new /api/gmail/send endpoint, which
+// sends through Gmail for real and logs the send against this client's
+// record. Both tracy@ and matt@elevatemy.ai are selectable senders since
+// matt@ is a "send mail as" alias on the same underlying Gmail account,
+// not a separate connection.
+function EmailComposer({ client, onCancel, onSent }) {
+  const [from, setFrom] = useState("tracy@elevatemy.ai");
+  const [subject, setSubject] = useState("");
+  const [body, setBody] = useState("");
+  const [status, setStatus] = useState("idle"); // idle | sending | error
+  const [error, setError] = useState("");
+
+  async function send() {
+    if (!subject.trim() || !body.trim()) return;
+    setStatus("sending"); setError("");
+    try {
+      const res = await fetch("/api/gmail/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ to: client.email, from, subject: subject.trim(), body: body.trim(), clientId: client.id }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || "Send failed");
+      onSent();
+    } catch (e) {
+      setStatus("error");
+      setError(e.message);
+    }
+  }
+
+  return (
+    <div>
+      <div className="display" style={{ fontSize: 18, marginBottom: 16 }}>Email {clientDisplayName(client)}</div>
+      <div className="field-row">
+        <Field label="To"><input value={client.email} disabled /></Field>
+        <Field label="From">
+          <select value={from} onChange={e => setFrom(e.target.value)}>
+            <option value="tracy@elevatemy.ai">tracy@elevatemy.ai</option>
+            <option value="matt@elevatemy.ai">matt@elevatemy.ai</option>
+          </select>
+        </Field>
+      </div>
+      <Field label="Subject"><input autoFocus value={subject} onChange={e => setSubject(e.target.value)} /></Field>
+      <Field label="Message"><textarea rows={8} value={body} onChange={e => setBody(e.target.value)} style={{ width: "100%", resize: "vertical" }} /></Field>
+      {status === "error" && <div style={{ fontSize: 12, color: "var(--coral)", marginBottom: 8 }}>{error}</div>}
+      <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+        <button className="btn btn-gold" disabled={status === "sending" || !subject.trim() || !body.trim()} onClick={send}>
+          {status === "sending" ? <><Loader2 size={14} className="spin" /> Sending…</> : <><Send size={14} /> Send</>}
+        </button>
+        <button type="button" className="btn btn-ghost" onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+function ProfileTab({ client, onPatch, onDelete, onComposeEmail }) {
   function patchName(patch) {
     const firstName = "firstName" in patch ? patch.firstName : (client.firstName || "");
     const lastName = "lastName" in patch ? patch.lastName : (client.lastName || "");
@@ -1324,6 +2311,7 @@ function ProfileTab({ client, onPatch, onDelete }) {
         <Field label="Last name"><input value={client.lastName || ""} onChange={e => patchName({ lastName: e.target.value })} /></Field>
       </div>
       <Field label="Company"><input value={client.company} onChange={e => onPatch({ company: e.target.value })} /></Field>
+      <Field label="Business website"><input value={client.website || ""} onChange={e => onPatch({ website: e.target.value })} placeholder="https://theirbusiness.com" /></Field>
       <div className="field-row">
         <Field label="Email"><input value={client.email} onChange={e => onPatch({ email: e.target.value })} /></Field>
         <Field label="Phone"><input value={client.phone} onChange={e => onPatch({ phone: e.target.value })} /></Field>
@@ -1331,6 +2319,35 @@ function ProfileTab({ client, onPatch, onDelete }) {
       <Field label="Status">
         <select value={client.status} onChange={e => onPatch({ status: e.target.value })}><option value="lead">Lead</option><option value="active">Active</option><option value="inactive">Inactive</option></select>
       </Field>
+
+      <div className="section-title" style={{ marginTop: 20, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <span>Links</span>
+        {client.email && <button className="btn btn-gold btn-sm" onClick={onComposeEmail}><Mail size={13} /> Send email</button>}
+      </div>
+      <div className="card" style={{ padding: 12 }}>
+        {(() => {
+          const list = zohoListName(client);
+          const links = [
+            client.website && { label: "Business website", href: client.website },
+            client.dashboard?.vercelUrl && { label: "Client site (built for them)", href: client.dashboard.vercelUrl },
+            client.dashboard?.githubUrl && { label: "GitHub repo", href: client.dashboard.githubUrl },
+          ].filter(Boolean);
+          return (
+            <>
+              {links.length === 0 ? <div style={{ fontSize: 12.5, color: "var(--slate)" }}>No links yet — add a business website above, or a client-site URL in the Dashboard tab.</div> : links.map(l => (
+                <div key={l.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0" }}>
+                  <span style={{ fontSize: 12.5 }}>{l.label}</span>
+                  <a href={l.href} target="_blank" rel="noreferrer" className="btn btn-ghost btn-sm"><ExternalLink size={12} /> Open</a>
+                </div>
+              ))}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderTop: links.length ? "1px solid var(--slate-line)" : "none", marginTop: links.length ? 6 : 0 }}>
+                <span style={{ fontSize: 12.5 }}>Zoho nurture list</span>
+                {list ? <Pill tone="navy">{list}</Pill> : <span style={{ fontSize: 12, color: "var(--slate)" }}>Not on a list — no completed assessment yet</span>}
+              </div>
+            </>
+          );
+        })()}
+      </div>
       <div style={{ marginTop: 20, borderTop: "1px solid var(--slate-line)", paddingTop: 16, display: "flex", gap: 8 }}>
         <button className="btn btn-ghost btn-sm" onClick={() => onPatch({ hidden: !client.hidden })}>
           {client.hidden ? <><Eye size={13} /> Unhide client</> : <><EyeOff size={13} /> Hide from main list</>}
@@ -1626,8 +2643,9 @@ function BillingTab({ client, onAdd, onPatch, onRemove, onPatchClient }) {
 
 function ClientTasksTab({ client, team, onAdd, onToggle, onRemove, onPatch }) {
   const [title, setTitle] = useState(""); const [owner, setOwner] = useState("client"); const [due, setDue] = useState(""); const [assignedTo, setAssignedTo] = useState("");
+  const [blockStart, setBlockStart] = useState(""); const [blockEnd, setBlockEnd] = useState("");
   const tasks = client.tasks || [];
-  function submit(e) { e.preventDefault(); if (!title.trim()) return; onAdd({ title: title.trim(), owner, dueDate: due, assignedTo: assignedTo || null }); setTitle(""); setDue(""); setAssignedTo(""); }
+  function submit(e) { e.preventDefault(); if (!title.trim()) return; onAdd({ title: title.trim(), owner, dueDate: due, assignedTo: assignedTo || null, blockStart: blockStart || "", blockEnd: blockEnd || "" }); setTitle(""); setDue(""); setAssignedTo(""); setBlockStart(""); setBlockEnd(""); }
   return (
     <div>
       <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 14 }}>Track what keeps this client's campaign moving — tasks the client owes us, and tasks we owe the client.</div>
@@ -1636,6 +2654,10 @@ function ClientTasksTab({ client, team, onAdd, onToggle, onRemove, onPatch }) {
         <div className="field-row">
           <Field label="Owed by"><select value={owner} onChange={e => setOwner(e.target.value)}><option value="client">Client</option><option value="team">Us</option></select></Field>
           <Field label="Due date"><input type="date" value={due} onChange={e => setDue(e.target.value)} /></Field>
+        </div>
+        <div className="field-row">
+          <Field label="Work on it starting"><input type="date" value={blockStart} onChange={e => setBlockStart(e.target.value)} /></Field>
+          <Field label="Work on it by (block end)"><input type="date" value={blockEnd} onChange={e => setBlockEnd(e.target.value)} /></Field>
         </div>
         <Field label="Assigned to">
           <select value={assignedTo} onChange={e => setAssignedTo(e.target.value)}>
@@ -1668,6 +2690,7 @@ function ClientTasksTab({ client, team, onAdd, onToggle, onRemove, onPatch }) {
                 {(team || []).map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
               </select>
               {t.dueDate && <span>· <Calendar size={11} /> {fmtDate(t.dueDate)}</span>}
+              {t.blockStart && <span>· <Clock size={11} /> work {fmtDate(t.blockStart)}–{fmtDate(t.blockEnd)}</span>}
             </div>
           </div>
           {isOverdue(t) && <Pill tone="coral">overdue</Pill>}

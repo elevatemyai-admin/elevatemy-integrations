@@ -16,7 +16,7 @@ module.exports = async (req, res) => {
   if (req.method === "GET") {
     try {
       const data = await getCache(CRM_KEY, null);
-      res.status(200).json(data || { clients: [], marketingCampaigns: [], activityLog: [], settings: {} });
+      res.status(200).json(data || { clients: [], marketingCampaigns: [], activityLog: [], settings: {}, emailTemplates: [], pendingEmails: [] });
     } catch (e) {
       res.status(500).json({ error: e.message });
     }

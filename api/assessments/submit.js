@@ -46,8 +46,10 @@ function corsHeaders(res) {
 function emptyClientShape() {
   return {
     tags: [], hidden: false, proBono: false,
+    website: "",
     newsletter: { subscribed: false, link: "" },
     zoho: { link: "", status: "not started", lastSent: "" },
+    engagementHistory: [],
     social: [],
     dashboard: { vercelUrl: "", githubUrl: "", lastInterview: "", notes: "" },
     tasks: [], billing: [],
@@ -104,10 +106,26 @@ module.exports = async (req, res) => {
     console.error("[assessments/submit] cache write failed:", e.message);
   }
 
-  // 2. Auto-create/update the real client record immediately.
+  // 2. Zoho nurture list add — fires the immediate + delayed emails once
+  // the corresponding list/autoresponder exists in Zoho Campaigns. Run
+  // this BEFORE the CRM write below so we can log a guaranteed
+  // "enrolled in nurture list" event on the client record in the same
+  // write — this is real, code-controlled activity, unlike email
+  // opens/clicks on Zoho Workflow-triggered sends, which aren't confirmed
+  // to be trackable back to a per-contact history the way regular
+  // Campaign clicks/opens are (see lib/zoho.js's fetchZohoCampaignClickers
+  // comments).
+  let nurtureResult = { skipped: true };
+  try {
+    nurtureResult = await addContactToNurtureList(record);
+  } catch (e) {
+    console.error("[assessments/submit] Zoho nurture add failed:", e.message);
+  }
+
+  // 3. Auto-create/update the real client record immediately.
   let crmResult = { ok: false };
   try {
-    const crmData = (await getCache(CRM_DATA_KEY, null)) || { clients: [], marketingCampaigns: [], activityLog: [], settings: {} };
+    const crmData = (await getCache(CRM_DATA_KEY, null)) || { clients: [], marketingCampaigns: [], activityLog: [], settings: {}, emailTemplates: [], pendingEmails: [] };
     const clients = crmData.clients || [];
     const emailKey = email.toLowerCase().trim();
     const idx = clients.findIndex((c) => (c.email || "").toLowerCase().trim() === emailKey);
@@ -127,6 +145,12 @@ module.exports = async (req, res) => {
       notes: resultsUrl ? `Results: ${resultsUrl}` : "",
     };
 
+    // Only log a real, confirmed enrollment event — not a guess at whether
+    // the email actually sent or was opened.
+    const enrollmentEvent = nurtureResult && nurtureResult.ok !== false && !nurtureResult.skipped
+      ? [{ type: "email_enrolled", campaignName: `${record.path === "financial" ? "FP" : "General"} - ${record.tier} nurture list`, ts: record.completedAt }]
+      : [];
+
     let activityText;
     if (idx === -1) {
       clients.push({
@@ -141,13 +165,32 @@ module.exports = async (req, res) => {
         createdAt: new Date().toISOString(),
         assessment,
         ...emptyClientShape(),
+        engagementHistory: enrollmentEvent,
       });
       activityText = `${fullName || email} completed the ${assessment.path} assessment (new client)`;
     } else {
       const existing = clients[idx];
       const currentTier = STATUS_TIER[existing.status] || 1;
       const nextStatus = currentTier < STATUS_TIER.opportunity ? "opportunity" : existing.status;
-      clients[idx] = { ...existing, status: nextStatus, assessment };
+      // FIXED: previously only status + assessment were updated here, so a
+      // completed assessment's fresh name/company/phone was silently
+      // discarded whenever the person already existed as a client (e.g.
+      // from an earlier campaign import with those fields blank). A
+      // completed assessment is a direct, authoritative signal from the
+      // person themselves, so it should be allowed to fill in/update these
+      // fields — but only when the new value is non-empty, so we never
+      // overwrite a real existing value with a blank one.
+      clients[idx] = {
+        ...existing,
+        status: nextStatus,
+        assessment,
+        name: fullName || existing.name,
+        firstName: firstName || existing.firstName,
+        lastName: lastName || existing.lastName,
+        company: company || existing.company,
+        phone: phone || existing.phone,
+        engagementHistory: [...(existing.engagementHistory || []), ...enrollmentEvent].slice(-100),
+      };
       activityText = `${existing.name || email} completed the ${assessment.path} assessment`;
     }
 
@@ -161,15 +204,6 @@ module.exports = async (req, res) => {
   } catch (e) {
     console.error("[assessments/submit] CRM client upsert failed:", e.message);
     crmResult = { ok: false, error: e.message };
-  }
-
-  // 3. Zoho nurture list add — fires the immediate + delayed emails once
-  // the corresponding list/autoresponder exists in Zoho Campaigns.
-  let nurtureResult = { skipped: true };
-  try {
-    nurtureResult = await addContactToNurtureList(record);
-  } catch (e) {
-    console.error("[assessments/submit] Zoho nurture add failed:", e.message);
   }
 
   res.status(200).json({ ok: true, crm: crmResult, nurture: nurtureResult });
