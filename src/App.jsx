@@ -4,10 +4,15 @@ import {
   Newspaper, Share2, ClipboardCheck, CheckCircle2, Circle, AlertTriangle, Trash2,
   ChevronRight, ChevronDown, Save, Loader2, Calendar, Clock, History, Mail, User, Users2, DollarSign, Megaphone,
   Settings as SettingsIcon, RefreshCw, Wifi, WifiOff, TrendingUp, CreditCard, Activity,
-  Inbox, UserPlus, Check, Send, FileSignature, Eye, EyeOff, Sparkles, Linkedin, Facebook, Copy, Link2
+  Inbox, UserPlus, Check, Send, FileSignature, Eye, EyeOff, Sparkles, Linkedin, Facebook, Copy, Link2, Globe, Download
 } from "lucide-react";
 
 // ---------- constants ----------
+
+const LEAD_SOURCES = [
+  "LinkedIn DM", "LinkedIn post/comment", "Referral", "Cold email",
+  "Website / assessment", "Facebook", "CPA campaign", "In person", "Other",
+];
 
 const STAGES = [
   { key: "assessment", label: "Assessment", icon: ClipboardCheck },
@@ -109,6 +114,17 @@ const emptyClient = () => ({
   website: "",
   email: "",
   phone: "",
+  // Extra contact points beyond the primary email/phone above — the
+  // primary fields stay untouched since they're used for matching
+  // throughout the app (Gmail sync, Zoho, search, findClientByEmail);
+  // these are purely additional reference info, each just a plain string.
+  additionalEmails: [],
+  additionalPhones: [],
+  // Where this contact originally came from — free-form dropdown, set at
+  // add-time or later from the Profile tab. Separate from assessment.path
+  // (GB/FP track), which can also be set before an assessment is actually
+  // completed, for an "expected track" on a brand-new lead.
+  leadSource: "",
   status: "lead",
   tags: [],
   hidden: false,
@@ -164,6 +180,22 @@ function isOverdue(task) {
 // all — fall back to company, then email, before ever showing "Unnamed
 // client", since a bare email is far more useful/identifying than nothing.
 function clientDisplayName(c) { return (c && (c.name || c.company || c.email)) || "Unnamed client"; }
+
+// Normalizes a name to "First capital, rest lowercase" per word — applied
+// at save time (not live per-keystroke, to avoid fighting the cursor
+// while someone's still typing). Also capitalizes after hyphens and
+// apostrophes so common patterns like "mary-jane o'brien" become
+// "Mary-Jane O'Brien" rather than a naive single-capital pass flattening
+// them. Not perfect for every real name (genuinely unusual internal
+// capitalization like "McDonald" or "DeSoto" will still get flattened to
+// "Mcdonald"/"Desoto") — a full name-capitalization solution would need a
+// dictionary of known exceptions, which felt like overkill here; this
+// covers the common case well.
+function toNameCase(str) {
+  return (str || "")
+    .toLowerCase()
+    .replace(/(^|[\s'-])([a-z])/g, (match, sep, letter) => sep + letter.toUpperCase());
+}
 
 // Payment-status pills, computed live from billing entries + the manual
 // pro-bono flag — not stored separately, so they're always accurate.
@@ -441,6 +473,22 @@ export default function App() {
     }
   }
 
+  async function generateBrandedImage(itemId) {
+    try {
+      const res = await fetch("/api/marketing/design-card", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ itemId }),
+      });
+      const result = await res.json();
+      if (!res.ok || !result.ok) throw new Error(result.error || "Image generation failed");
+      await loadCrmData();
+      return { ok: true, ...result };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  }
+
   const selectedClient = useMemo(() => clients.find(c => c.id === selectedId) || null, [clients, selectedId]);
 
   const filteredClients = useMemo(() => clients.filter(c => {
@@ -631,6 +679,7 @@ export default function App() {
     { key: "tasks", label: "Tasks", icon: ListChecks },
     { key: "marketing", label: "Marketing", icon: Megaphone },
     { key: "content", label: "Content Studio", icon: Sparkles },
+    { key: "actionsites", label: "Action Sites", icon: Globe },
     { key: "settings", label: "Settings", icon: SettingsIcon },
   ];
 
@@ -638,28 +687,28 @@ export default function App() {
     <div className="crm-root">
       <style>{`
         .crm-root {
-          // Brand colors below now come from the official elevatemy.ai Brand
-          // Kit doc (uploaded July 23, 2026), verified by pixel-sampling the
-          // actual logo files inside it — not approximated from screenshots
-          // or emails, which is what earlier versions of this file did.
-          //
-          // The brand kit defines TWO variants: "Financial Services" (dark,
-          // for dark surfaces) and "General Business" (light, for light
-          // surfaces) — it explicitly says the GB variant "is not designed
-          // for dark surfaces." Since this CRM's sidebar IS a dark surface,
-          // the sidebar specifically uses the FP variant's exact colors
-          // (--sidebar-*), while the main light content area uses the GB
-          // variant (the --navy/--cloud/etc. tokens below). This isn't a
-          // style choice — it's what the brand kit's own usage rules call
-          // for given this app's actual dark/light layout.
-          //
-          // GB (General Business) palette — confirmed hex, light surfaces:
+          /* Brand colors below now come from the official elevatemy.ai Brand
+             Kit doc (uploaded July 23, 2026), verified by pixel-sampling the
+             actual logo files inside it — not approximated from screenshots
+             or emails, which is what earlier versions of this file did.
+
+             The brand kit defines TWO variants: "Financial Services" (dark,
+             for dark surfaces) and "General Business" (light, for light
+             surfaces) — it explicitly says the GB variant "is not designed
+             for dark surfaces." Since this CRM's sidebar IS a dark surface,
+             the sidebar specifically uses the FP variant's exact colors
+             (--sidebar-*), while the main light content area uses the GB
+             variant (the --navy/--cloud/etc. tokens below). This isn't a
+             style choice — it's what the brand kit's own usage rules call
+             for given this app's actual dark/light layout.
+
+             GB (General Business) palette — confirmed hex, light surfaces: */
           --ink:#1a1a1a; --navy:#1B3A6B; --navy-soft:#3D4E8A; --cloud:#F8F6F2; --cloud-dim:#EAEBEA;
           --teal-accent:#00A99D; --pale-teal:#5BC8C0; --peach-accent:#E5C9B2;
           --card:#FFFFFF; --gold:#E8A33D; --gold-soft:#FBEBD2; --green:#4C7A5E; --green-soft:#E1EBE4;
           --coral:#C7554F; --coral-soft:#F5DEDC; --slate:#6B7280; --slate-line:#DADEE3;
-          // FP (Financial Services) palette — confirmed hex, used ONLY for
-          // the dark sidebar (background, hover states, wordmark, icon):
+          /* FP (Financial Services) palette — confirmed hex, used ONLY for
+             the dark sidebar (background, hover states, wordmark, icon): */
           --sidebar-bg:#0B1120; --sidebar-icon-bg:#141E30; --sidebar-bar:#3D4E8A;
           --sidebar-teal:#2DD4C8; --sidebar-text:#F1F5F9;
           font-family:'Inter',-apple-system,sans-serif; background:var(--cloud); color:var(--ink);
@@ -805,6 +854,7 @@ export default function App() {
               {view === "tasks" && "Tasks & Campaigns"}
               {view === "marketing" && "Marketing"}
               {view === "content" && "Content Studio"}
+              {view === "actionsites" && "Action Sites"}
               {view === "settings" && "Settings"}
             </h1>
             <p>
@@ -814,6 +864,7 @@ export default function App() {
               {view === "tasks" && "What clients owe us, and what we owe clients."}
               {view === "marketing" && "CPA campaigns and prospecting activity, live from Zoho once connected."}
               {view === "content" && "AI-drafted campaigns, emails, and social posts — review and approve, nothing goes out without you."}
+              {view === "actionsites" && "Every client's live action-plan site, one click away."}
               {view === "settings" && "Connect the CRM to your Vercel API routes."}
             </p>
           </div>
@@ -853,7 +904,10 @@ export default function App() {
               onCreateCampaign={createMarketingCampaign}
               onGenerate={generateMarketingContent}
               onApprove={approveMarketingContent}
+              onGenerateImage={generateBrandedImage}
             />
+          ) : view === "actionsites" ? (
+            <ActionSitesView clients={clients} activityLog={activityLog} onOpen={(id) => { setSelectedId(id); setView("clients"); setDetailTab("dashboard"); }} />
           ) : (
             <SettingsView zohoStatus={zohoStatus} zohoError={zohoError} onTest={checkZoho} team={team} onAddTeamMember={addTeamMember} onRemoveTeamMember={removeTeamMember}
               emailTemplates={emailTemplates} onAddTemplate={addEmailTemplate} onRemoveTemplate={removeEmailTemplate} onPatchTemplate={patchEmailTemplate} />
@@ -1654,7 +1708,7 @@ function GenerateContentForm({ campaigns, lockedCampaignId, onGenerate }) {
   );
 }
 
-function MarketingContentCard({ item, campaigns, onApprove }) {
+function MarketingContentCard({ item, campaigns, onApprove, onGenerateImage }) {
   const campaign = campaigns.find(c => c.id === item.campaignId);
   const [editing, setEditing] = useState(false);
   const [subject, setSubject] = useState(item.subject);
@@ -1664,6 +1718,8 @@ function MarketingContentCard({ item, campaigns, onApprove }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState(null);
+  const [imageBusy, setImageBusy] = useState(false);
+  const [imageError, setImageError] = useState("");
 
   async function handle(action) {
     setBusy(true); setError(""); setResult(null);
@@ -1675,6 +1731,13 @@ function MarketingContentCard({ item, campaigns, onApprove }) {
     setBusy(false);
     if (!res.ok) { setError(res.error); return; }
     setResult(res);
+  }
+
+  async function handleGenerateImage() {
+    setImageBusy(true); setImageError("");
+    const res = await onGenerateImage(item.id);
+    setImageBusy(false);
+    if (!res.ok) setImageError(res.error);
   }
 
   const typeIcon = item.type === "linkedin_post" ? <Linkedin size={13} /> : item.type === "facebook_post" ? <Facebook size={13} /> : <Mail size={13} />;
@@ -1694,11 +1757,47 @@ function MarketingContentCard({ item, campaigns, onApprove }) {
           {item.type === "email" && <Field label="Subject"><input value={subject} onChange={e => setSubject(e.target.value)} /></Field>}
           <Field label="Body"><textarea rows={7} value={body} onChange={e => setBody(e.target.value)} style={{ width: "100%", resize: "vertical" }} /></Field>
         </>
+      ) : item.type !== "email" && !item.hasImage ? (
+        // Social posts without a generated image yet still get a branded
+        // colored backdrop (same gradient as the tile cover) rather than
+        // plain gray text on white — so reviewing a post in-app already
+        // feels like previewing something real, not just reading a draft.
+        <div style={{ position: "relative", borderRadius: 10, padding: 16, background: contentCoverGradient(item.type), overflow: "hidden", marginBottom: 4 }}>
+          <CoverWatermark />
+          <div style={{ position: "relative", zIndex: 1, fontSize: 13, color: "#fff", whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{item.body}</div>
+        </div>
       ) : (
         <>
           {item.type === "email" && <div className="task-title" style={{ marginBottom: 4 }}>{item.subject}</div>}
           <div style={{ fontSize: 12.5, color: "var(--slate)", whiteSpace: "pre-wrap" }}>{item.body}</div>
         </>
+      )}
+
+      {item.hasImage && (
+        <div style={{ marginBottom: 10 }}>
+          <img src={`/api/marketing/card-image?itemId=${item.id}&v=${encodeURIComponent(item.imageGeneratedAt || "")}`} alt={item.imageHeadline || "Branded card"} style={{ width: "100%", maxWidth: 320, borderRadius: 10, display: "block" }} />
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
+            {item.imageHeadline && <div style={{ fontSize: 11, color: "var(--slate)", fontStyle: "italic", flex: 1 }}>Headline: "{item.imageHeadline}"</div>}
+            {item.imageUsedPhoto && <Pill tone="green">Real photo</Pill>}
+          </div>
+          <a
+            href={`/api/marketing/card-image?itemId=${item.id}&v=${encodeURIComponent(item.imageGeneratedAt || "")}`}
+            download={`${(item.imageHeadline || "branded-card").replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.png`}
+            className="btn btn-ghost btn-sm"
+            style={{ marginTop: 8 }}
+          >
+            <Download size={12} /> Download image
+          </a>
+        </div>
+      )}
+
+      {item.type !== "email" && onGenerateImage && (
+        <div style={{ marginTop: 10 }}>
+          <button type="button" className="btn btn-ghost btn-sm" disabled={imageBusy} onClick={handleGenerateImage}>
+            {imageBusy ? <Loader2 size={12} className="spin" /> : <Sparkles size={12} />} {item.hasImage ? "Regenerate branded image" : "Generate branded image"}
+          </button>
+          {imageError && <div style={{ fontSize: 12, color: "var(--coral)", marginTop: 6 }}>{imageError}</div>}
+        </div>
       )}
 
       {item.type === "email" && (
@@ -1786,7 +1885,7 @@ function CoverWatermark() {
   );
 }
 
-function CampaignBoard({ campaign, items, onApprove }) {
+function CampaignBoard({ campaign, items, onApprove, onGenerateImage }) {
   const [expandedId, setExpandedId] = useState(null);
   const expandedItem = items.find(i => i.id === expandedId);
 
@@ -1804,14 +1903,21 @@ function CampaignBoard({ campaign, items, onApprove }) {
             style={{ overflow: "hidden", cursor: "pointer", border: expandedId === item.id ? "2px solid var(--gold)" : undefined }}
             onClick={() => setExpandedId(id => id === item.id ? null : item.id)}
           >
-            <div style={{ position: "relative", height: 64, background: contentCoverGradient(item.type), padding: "10px 12px", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
-              <CoverWatermark />
-              <div style={{ display: "flex", alignItems: "center", gap: 6, color: "#fff", position: "relative", zIndex: 1 }}>
-                {contentTypeIcon(item.type)}
-                <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em" }}>{CONTENT_TYPE_LABELS[item.type] || item.type}</span>
+            {item.hasImage ? (
+              <div style={{ position: "relative", height: 140, overflow: "hidden" }}>
+                <img src={`/api/marketing/card-image?itemId=${item.id}&v=${encodeURIComponent(item.imageGeneratedAt || "")}`} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                <div style={{ position: "absolute", top: 8, right: 8 }}><Pill tone={statusTone[item.status] || "slate"}>{item.status.replace("_", " ")}</Pill></div>
               </div>
-              <div style={{ position: "relative", zIndex: 1 }}><Pill tone={statusTone[item.status] || "slate"}>{item.status.replace("_", " ")}</Pill></div>
-            </div>
+            ) : (
+              <div style={{ position: "relative", height: 64, background: contentCoverGradient(item.type), padding: "10px 12px", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+                <CoverWatermark />
+                <div style={{ display: "flex", alignItems: "center", gap: 6, color: "#fff", position: "relative", zIndex: 1 }}>
+                  {contentTypeIcon(item.type)}
+                  <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em" }}>{CONTENT_TYPE_LABELS[item.type] || item.type}</span>
+                </div>
+                <div style={{ position: "relative", zIndex: 1 }}><Pill tone={statusTone[item.status] || "slate"}>{item.status.replace("_", " ")}</Pill></div>
+              </div>
+            )}
             <div style={{ padding: 12 }}>
               <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 4, overflow: "hidden", textOverflow: "ellipsis", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
                 {item.subject || item.body.slice(0, 60)}
@@ -1823,14 +1929,14 @@ function CampaignBoard({ campaign, items, onApprove }) {
       </div>
       {expandedItem && (
         <div style={{ marginBottom: 20 }}>
-          <MarketingContentCard item={expandedItem} campaigns={[campaign]} onApprove={onApprove} />
+          <MarketingContentCard item={expandedItem} campaigns={[campaign]} onApprove={onApprove} onGenerateImage={onGenerateImage} />
         </div>
       )}
     </div>
   );
 }
 
-function ContentStudioView({ marketingHub, team, onCreateCampaign, onGenerate, onApprove }) {
+function ContentStudioView({ marketingHub, team, onCreateCampaign, onGenerate, onApprove, onGenerateImage }) {
   const [showNewCampaign, setShowNewCampaign] = useState(false);
   const [viewingCampaignId, setViewingCampaignId] = useState(null);
   const campaigns = marketingHub.campaigns || [];
@@ -1864,7 +1970,7 @@ function ContentStudioView({ marketingHub, team, onCreateCampaign, onGenerate, o
         </div>
 
         <div className="section-title">Assets ({campaignItems.length})</div>
-        <CampaignBoard campaign={viewingCampaign} items={campaignItems} onApprove={onApprove} />
+        <CampaignBoard campaign={viewingCampaign} items={campaignItems} onApprove={onApprove} onGenerateImage={onGenerateImage} />
 
         <div className="section-title">Add content to this campaign</div>
         <GenerateContentForm campaigns={campaigns} lockedCampaignId={viewingCampaign.id} onGenerate={onGenerate} />
@@ -1921,7 +2027,7 @@ function ContentStudioView({ marketingHub, team, onCreateCampaign, onGenerate, o
         <div className="empty-state" style={{ padding: 20, marginBottom: 20 }}>Nothing waiting on you right now.</div>
       ) : (
         <div style={{ marginBottom: 20 }}>
-          {pending.map(item => <MarketingContentCard key={item.id} item={item} campaigns={campaigns} onApprove={onApprove} />)}
+          {pending.map(item => <MarketingContentCard key={item.id} item={item} campaigns={campaigns} onApprove={onApprove} onGenerateImage={onGenerateImage} />)}
         </div>
       )}
 
@@ -1941,6 +2047,108 @@ function ContentStudioView({ marketingHub, team, onCreateCampaign, onGenerate, o
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+// ---------- Action Sites ----------
+
+// Aggregates every client that has a built action-plan/dashboard site
+// linked (client.dashboard.vercelUrl) into one quick-access list — pulls
+// from the same field already editable in each client's Dashboard tab,
+// so there's nothing new to maintain in two places. A client only shows
+// up here once that field is actually set.
+//
+// Each card also shows: % of action-site tasks completed (synced from
+// that client's own site via api/crm/action-site-tasks.js — both the
+// PLAN and ROADMAP trackers, tagged with actionSiteStepKey), how many
+// times they've used voice input on the site (a usage count only — no
+// audio is ever recorded or stored), and their most recent activity
+// (reusing the same global activityLog + name/email text-matching
+// heuristic as ClientActivityTab and the Import tab's "Actions taken"
+// section, since action-site events get logged there the same way).
+function ActionSitesView({ clients, activityLog, onOpen }) {
+  const sites = clients
+    .filter(c => c.dashboard?.vercelUrl)
+    .sort((a, b) => (a.dashboard.lastInterview || "").localeCompare(b.dashboard.lastInterview || "") * -1 || clientDisplayName(a).localeCompare(clientDisplayName(b)));
+
+  if (sites.length === 0) {
+    return (
+      <div className="empty-state">
+        <div className="display">No action sites linked yet</div>
+        Open a client's Dashboard tab and add their Vercel URL — they'll show up here automatically.
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 14 }}>
+      {sites.map(c => {
+        const actionTasks = (c.tasks || []).filter(t => t.actionSiteStepKey);
+        const doneCount = actionTasks.filter(t => t.status === "done").length;
+        const pct = actionTasks.length ? Math.round((doneCount / actionTasks.length) * 100) : null;
+        const voiceCount = c.actionSiteVoiceCount || 0;
+        // Only activity that actually happened ON the action site itself
+        // (task completions, chat/voice usage — all logged by
+        // api/crm/action-site-tasks.js with this exact phrasing) — NOT
+        // general email activity, which would otherwise also match via
+        // the same name/email text-search this used to use.
+        const recentActivity = (activityLog || [])
+          .filter(a => a.text.includes("on their action site") || a.text.includes("action site chat"))
+          .filter(a => (c.email && a.text.includes(c.email)) || (c.name && a.text.includes(c.name)))
+          .slice(0, 3);
+        const thumbnailUrl = `https://api.microlink.io/?url=${encodeURIComponent(c.dashboard.vercelUrl)}&meta=false&screenshot=&embed=screenshot.url`;
+
+        return (
+          <div key={c.id} className="card" style={{ padding: 0, overflow: "hidden" }}>
+            <div style={{ position: "relative", height: 130, background: "var(--cloud-dim)", cursor: "pointer" }} onClick={() => window.open(c.dashboard.vercelUrl, "_blank")}>
+              <img src={thumbnailUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: "top", display: "block" }}
+                onError={(e) => { e.target.style.display = "none"; }} />
+            </div>
+            <div style={{ padding: 16 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+                <div style={{ cursor: "pointer" }} onClick={() => onOpen(c.id)}>
+                  <div className="client-name">{clientDisplayName(c)}</div>
+                  {c.company && <div className="client-sub">{c.company}</div>}
+                </div>
+                <Globe size={16} color="var(--navy)" />
+              </div>
+
+              {pct !== null && (
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--slate)", marginBottom: 3 }}>
+                    <span>{doneCount} of {actionTasks.length} tasks done</span>
+                    <span style={{ fontWeight: 700, color: "var(--navy)" }}>{pct}%</span>
+                  </div>
+                  <div className="cat-bar-track"><div className="cat-bar-fill" style={{ width: `${pct}%` }} /></div>
+                </div>
+              )}
+
+              <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
+                {voiceCount > 0 && <Pill tone="purple">🎤 {voiceCount} voice message{voiceCount !== 1 ? "s" : ""}</Pill>}
+              </div>
+
+              {recentActivity.length > 0 && (
+                <div style={{ marginBottom: 10, borderTop: "1px solid var(--slate-line)", paddingTop: 8 }}>
+                  <div style={{ fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", color: "var(--slate)", marginBottom: 4 }}>Recent activity</div>
+                  {recentActivity.map(a => (
+                    <div key={a.id} style={{ fontSize: 11.5, color: "var(--ink)", marginBottom: 3, display: "flex", justifyContent: "space-between", gap: 8 }}>
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.text}</span>
+                      <span style={{ color: "var(--slate)", flexShrink: 0 }}>{timeAgo(a.ts)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {c.dashboard.notes && <div style={{ fontSize: 12, color: "var(--slate)", marginBottom: 10, overflow: "hidden", textOverflow: "ellipsis", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{c.dashboard.notes}</div>}
+
+            <a href={c.dashboard.vercelUrl} target="_blank" rel="noreferrer" className="btn btn-gold btn-sm" style={{ width: "100%", justifyContent: "center" }}>
+              <ExternalLink size={13} /> Open site
+            </a>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -2307,8 +2515,8 @@ function ProfileTab({ client, onPatch, onDelete, onComposeEmail }) {
   return (
     <div>
       <div className="field-row">
-        <Field label="First name"><input value={client.firstName || ""} onChange={e => patchName({ firstName: e.target.value })} /></Field>
-        <Field label="Last name"><input value={client.lastName || ""} onChange={e => patchName({ lastName: e.target.value })} /></Field>
+        <Field label="First name"><input value={client.firstName || ""} onChange={e => patchName({ firstName: e.target.value })} onBlur={e => patchName({ firstName: toNameCase(e.target.value) })} /></Field>
+        <Field label="Last name"><input value={client.lastName || ""} onChange={e => patchName({ lastName: e.target.value })} onBlur={e => patchName({ lastName: toNameCase(e.target.value) })} /></Field>
       </div>
       <Field label="Company"><input value={client.company} onChange={e => onPatch({ company: e.target.value })} /></Field>
       <Field label="Business website"><input value={client.website || ""} onChange={e => onPatch({ website: e.target.value })} placeholder="https://theirbusiness.com" /></Field>
@@ -2316,6 +2524,50 @@ function ProfileTab({ client, onPatch, onDelete, onComposeEmail }) {
         <Field label="Email"><input value={client.email} onChange={e => onPatch({ email: e.target.value })} /></Field>
         <Field label="Phone"><input value={client.phone} onChange={e => onPatch({ phone: e.target.value })} /></Field>
       </div>
+
+      {(client.additionalEmails || []).map((email, i) => (
+        <div className="field-row" key={`email-${i}`}>
+          <Field label={`Additional email ${i + 2}`}>
+            <input value={email} onChange={e => {
+              const next = [...client.additionalEmails];
+              next[i] = e.target.value;
+              onPatch({ additionalEmails: next });
+            }} />
+          </Field>
+          <div style={{ display: "flex", alignItems: "flex-end", paddingBottom: 8 }}>
+            <button type="button" className="btn-danger btn btn-sm" onClick={() => onPatch({ additionalEmails: client.additionalEmails.filter((_, idx) => idx !== i) })}><Trash2 size={13} /></button>
+          </div>
+        </div>
+      ))}
+      <button type="button" className="btn btn-ghost btn-sm" style={{ marginBottom: 12 }} onClick={() => onPatch({ additionalEmails: [...(client.additionalEmails || []), ""] })}>
+        <Plus size={13} /> Add email
+      </button>
+
+      {(client.additionalPhones || []).map((phone, i) => (
+        <div className="field-row" key={`phone-${i}`}>
+          <Field label={`Additional phone ${i + 2}`}>
+            <input value={phone} onChange={e => {
+              const next = [...client.additionalPhones];
+              next[i] = e.target.value;
+              onPatch({ additionalPhones: next });
+            }} />
+          </Field>
+          <div style={{ display: "flex", alignItems: "flex-end", paddingBottom: 8 }}>
+            <button type="button" className="btn-danger btn btn-sm" onClick={() => onPatch({ additionalPhones: client.additionalPhones.filter((_, idx) => idx !== i) })}><Trash2 size={13} /></button>
+          </div>
+        </div>
+      ))}
+      <button type="button" className="btn btn-ghost btn-sm" style={{ marginBottom: 12 }} onClick={() => onPatch({ additionalPhones: [...(client.additionalPhones || []), ""] })}>
+        <Plus size={13} /> Add phone
+      </button>
+
+      <Field label="Lead source" hint="Where this contact originally came from">
+        <select value={client.leadSource || ""} onChange={e => onPatch({ leadSource: e.target.value })}>
+          <option value="">Not set</option>
+          {LEAD_SOURCES.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+      </Field>
+
       <Field label="Status">
         <select value={client.status} onChange={e => onPatch({ status: e.target.value })}><option value="lead">Lead</option><option value="active">Active</option><option value="inactive">Inactive</option></select>
       </Field>
@@ -2329,7 +2581,7 @@ function ProfileTab({ client, onPatch, onDelete, onComposeEmail }) {
           const list = zohoListName(client);
           const links = [
             client.website && { label: "Business website", href: client.website },
-            client.dashboard?.vercelUrl && { label: "Client site (built for them)", href: client.dashboard.vercelUrl },
+            client.dashboard?.vercelUrl && { label: "Action site (built for them)", href: client.dashboard.vercelUrl },
             client.dashboard?.githubUrl && { label: "GitHub repo", href: client.dashboard.githubUrl },
           ].filter(Boolean);
           return (
@@ -2704,15 +2956,79 @@ function ClientTasksTab({ client, team, onAdd, onToggle, onRemove, onPatch }) {
 function AddClientForm({ onCancel, onSave }) {
   const [firstName, setFirstName] = useState(""); const [lastName, setLastName] = useState(""); const [company, setCompany] = useState(""); const [email, setEmail] = useState("");
   const [phone, setPhone] = useState(""); const [status, setStatus] = useState("lead");
+  const [leadSource, setLeadSource] = useState("");
+  const [expectedTrack, setExpectedTrack] = useState(""); // "" | "general" | "financial"
+  const [linkedInUrl, setLinkedInUrl] = useState("");
+  const [extracting, setExtracting] = useState(false);
+  const [extractError, setExtractError] = useState("");
+  const [extracted, setExtracted] = useState(false);
+
+  async function handleScreenshotUpload(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setExtracting(true); setExtractError(""); setExtracted(false);
+    try {
+      const base64 = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result.split(",")[1]);
+        reader.onerror = () => reject(new Error("Couldn't read that file"));
+        reader.readAsDataURL(file);
+      });
+      const res = await fetch("/api/crm/extract-contact", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageBase64: base64, mediaType: file.type || "image/png" }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || "Extraction failed");
+
+      const c = data.contact;
+      if (c.firstName) setFirstName(c.firstName);
+      if (c.lastName) setLastName(c.lastName);
+      if (c.company) setCompany(c.company);
+      if (c.email) setEmail(c.email);
+      if (c.phone) setPhone(c.phone);
+      if (c.linkedInUrl) setLinkedInUrl(c.linkedInUrl);
+      setExtracted(true);
+    } catch (err) {
+      setExtractError(err.message);
+    }
+    setExtracting(false);
+  }
+
   function submit(e) {
     e.preventDefault();
     if (!firstName.trim() && !lastName.trim()) return;
-    const name = [firstName.trim(), lastName.trim()].filter(Boolean).join(" ");
-    onSave({ firstName: firstName.trim(), lastName: lastName.trim(), name, company, email, phone, status });
+    const casedFirst = toNameCase(firstName.trim());
+    const casedLast = toNameCase(lastName.trim());
+    const name = [casedFirst, casedLast].filter(Boolean).join(" ");
+    const data = {
+      firstName: casedFirst, lastName: casedLast, name, company, email, phone, status, leadSource,
+    };
+    if (expectedTrack) {
+      data.assessment = { ...emptyAssessment(), path: expectedTrack };
+    }
+    if (linkedInUrl.trim()) {
+      data.social = [{ id: uid(), platform: "LinkedIn", link: linkedInUrl.trim(), status: "active" }];
+    }
+    onSave(data);
   }
+
   return (
     <form onSubmit={submit}>
       <div className="display" style={{ fontSize: 18, marginBottom: 16 }}>Add a client</div>
+
+      <div className="card" style={{ padding: 12, marginBottom: 16, background: "var(--cloud)" }}>
+        <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 6 }}>Import from a screenshot</div>
+        <div style={{ fontSize: 11.5, color: "var(--slate)", marginBottom: 8 }}>
+          A LinkedIn "Contact info" popup, a business card photo, an email signature — Claude reads it and fills in what it can below. Always double-check before saving.
+        </div>
+        <input type="file" accept="image/*" onChange={handleScreenshotUpload} disabled={extracting} />
+        {extracting && <div style={{ fontSize: 12, color: "var(--slate)", marginTop: 8, display: "flex", alignItems: "center", gap: 6 }}><Loader2 size={13} className="spin" /> Reading screenshot…</div>}
+        {extractError && <div style={{ fontSize: 12, color: "var(--coral)", marginTop: 8 }}>{extractError}</div>}
+        {extracted && !extracting && <div style={{ fontSize: 12, color: "var(--green)", marginTop: 8 }}>Extracted — review the fields below before saving.</div>}
+      </div>
+
       <div className="field-row">
         <Field label="First name"><input autoFocus value={firstName} onChange={e => setFirstName(e.target.value)} /></Field>
         <Field label="Last name"><input value={lastName} onChange={e => setLastName(e.target.value)} /></Field>
@@ -2721,6 +3037,22 @@ function AddClientForm({ onCancel, onSave }) {
       <div className="field-row">
         <Field label="Email"><input type="email" value={email} onChange={e => setEmail(e.target.value)} /></Field>
         <Field label="Phone"><input value={phone} onChange={e => setPhone(e.target.value)} /></Field>
+      </div>
+      {linkedInUrl && <Field label="LinkedIn"><input value={linkedInUrl} onChange={e => setLinkedInUrl(e.target.value)} /></Field>}
+      <div className="field-row">
+        <Field label="Lead source" hint="Where this contact came from">
+          <select value={leadSource} onChange={e => setLeadSource(e.target.value)}>
+            <option value="">Not set</option>
+            {LEAD_SOURCES.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </Field>
+        <Field label="Expected track" hint="Can change once they take the real assessment">
+          <select value={expectedTrack} onChange={e => setExpectedTrack(e.target.value)}>
+            <option value="">Not sure yet</option>
+            <option value="general">General Business</option>
+            <option value="financial">Financial Services</option>
+          </select>
+        </Field>
       </div>
       <Field label="Status"><select value={status} onChange={e => setStatus(e.target.value)}><option value="lead">Lead</option><option value="active">Active</option><option value="inactive">Inactive</option></select></Field>
       <div style={{ display: "flex", gap: 8, marginTop: 18 }}>
