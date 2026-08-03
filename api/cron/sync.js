@@ -285,7 +285,7 @@ module.exports = async (req, res) => {
     crmData.clients = clients;
     if (activityNotes.length) {
       const newEntries = activityNotes.map((text) => ({ id: crypto.randomBytes(4).toString("hex"), text, ts: new Date().toISOString() }));
-      crmData.activityLog = [...newEntries, ...(crmData.activityLog || [])].slice(0, 50);
+      crmData.activityLog = [...newEntries, ...(crmData.activityLog || [])].slice(0, 300);
     }
     await setCache(CRM_DATA_KEY, crmData);
 
@@ -381,7 +381,7 @@ module.exports = async (req, res) => {
       crmData.clients = clients;
       if (beehiivActivityNotes.length) {
         const newEntries = beehiivActivityNotes.map((text) => ({ id: crypto.randomBytes(4).toString("hex"), text, ts: new Date().toISOString() }));
-        crmData.activityLog = [...newEntries, ...(crmData.activityLog || [])].slice(0, 50);
+        crmData.activityLog = [...newEntries, ...(crmData.activityLog || [])].slice(0, 300);
       }
       await setCache(CRM_DATA_KEY, crmData);
       results["crm:beehiivEnrichment"] = { ok: true, enriched: enrichedCount, created: createdCount };
@@ -562,7 +562,7 @@ module.exports = async (req, res) => {
       : stillPending;
     if (emailActivityNotes.length) {
       const newEntries = emailActivityNotes.map((note) => ({ id: crypto.randomBytes(4).toString("hex"), text: note.text, ts: note.ts }));
-      crmData.activityLog = [...newEntries, ...(crmData.activityLog || [])].slice(0, 50);
+      crmData.activityLog = [...newEntries, ...(crmData.activityLog || [])].slice(0, 300);
     }
     await setCache(CRM_DATA_KEY, crmData);
     results["crm:gmailIncoming"] = {

@@ -373,7 +373,7 @@ export default function App() {
 
   function logActivity(text, list = activityLog) {
     const entry = { id: uid(), text, ts: new Date().toISOString() };
-    return [entry, ...list].slice(0, 50);
+    return [entry, ...list].slice(0, 300);
   }
 
   function updateClients(updater, activityText) {
@@ -996,7 +996,8 @@ function categorizeActivity(text) {
   const t = text || "";
   if (/completed the .* assessment/i.test(t)) return { key: "assessment", label: "Assessment completed", tone: "green" };
   if (/emailed us:/i.test(t)) return { key: "email", label: "Emails received", tone: "gold" };
-  if (/^Emailed .*:/i.test(t)) return { key: "email_out", label: "Emails sent", tone: "navy" };
+  if (/^Emailed .*:/i.test(t) || /^Approved and sent AI-drafted reply/i.test(t)) return { key: "email_out", label: "Emails sent", tone: "navy" };
+  if (/enrolled in .* nurture/i.test(t)) return { key: "nurture", label: "Nurture enrollment", tone: "green" };
   if (/^(Added|Merged) .* (from|data into)/i.test(t) || /upgraded to|tagged CPA Lead|Corrected name for|Renamed \d+ existing/i.test(t)) return { key: "imported", label: "Imported / synced", tone: "navy" };
   if (/^Completed task/i.test(t)) return { key: "task", label: "Tasks", tone: "gold" };
   if (/^Added client|^Removed client/i.test(t)) return { key: "client", label: "Client changes", tone: "slate" };
