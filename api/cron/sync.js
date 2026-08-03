@@ -200,12 +200,16 @@ module.exports = async (req, res) => {
 
     const existing = clients[idx];
     const nurture = existing.engagementNurture || {};
-    if (nurture[kind]) return clients; // already enrolled for this kind — never re-trigger
+    if (nurture[kind]) {
+      console.log(`[debug2] SKIP ${kind} ${email} — already flagged enrolled at ${nurture[kind].enrolledAt || "?"}`);
+      return clients;
+    }
 
     let nurtureResult = { skipped: true };
     let removeResult = { skipped: true };
     try {
       nurtureResult = await addContactToEngagementNurture(existing, kind);
+      console.log(`[debug2] ATTEMPT ${kind} ${email} — raw response: ${JSON.stringify(nurtureResult).slice(0, 300)}`);
     } catch (e) {
       console.error(`[sync] engagement nurture add (${kind}) failed for ${email}:`, e.message);
     }
@@ -285,7 +289,7 @@ module.exports = async (req, res) => {
     crmData.clients = clients;
     if (activityNotes.length) {
       const newEntries = activityNotes.map((text) => ({ id: crypto.randomBytes(4).toString("hex"), text, ts: new Date().toISOString() }));
-      crmData.activityLog = [...newEntries, ...(crmData.activityLog || [])].slice(0, 300);
+      crmData.activityLog = [...newEntries, ...(crmData.activityLog || [])].slice(0, 50);
     }
     await setCache(CRM_DATA_KEY, crmData);
 
@@ -381,7 +385,7 @@ module.exports = async (req, res) => {
       crmData.clients = clients;
       if (beehiivActivityNotes.length) {
         const newEntries = beehiivActivityNotes.map((text) => ({ id: crypto.randomBytes(4).toString("hex"), text, ts: new Date().toISOString() }));
-        crmData.activityLog = [...newEntries, ...(crmData.activityLog || [])].slice(0, 300);
+        crmData.activityLog = [...newEntries, ...(crmData.activityLog || [])].slice(0, 50);
       }
       await setCache(CRM_DATA_KEY, crmData);
       results["crm:beehiivEnrichment"] = { ok: true, enriched: enrichedCount, created: createdCount };
@@ -562,7 +566,7 @@ module.exports = async (req, res) => {
       : stillPending;
     if (emailActivityNotes.length) {
       const newEntries = emailActivityNotes.map((note) => ({ id: crypto.randomBytes(4).toString("hex"), text: note.text, ts: note.ts }));
-      crmData.activityLog = [...newEntries, ...(crmData.activityLog || [])].slice(0, 300);
+      crmData.activityLog = [...newEntries, ...(crmData.activityLog || [])].slice(0, 50);
     }
     await setCache(CRM_DATA_KEY, crmData);
     results["crm:gmailIncoming"] = {
