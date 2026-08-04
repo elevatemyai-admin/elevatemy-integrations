@@ -6,7 +6,7 @@
 const crypto = require("crypto");
 const { getCache, setCache } = require("../../lib/store");
 const { fetchZohoCampaigns, fetchZohoLeadsBySource, fetchZohoCampaignClickers, fetchZohoCampaignOpeners, addContactToEngagementNurture, removeContactFromRegularCpaList } = require("../../lib/zoho");
-const { fetchBeehiivSubscribers } = require("../../lib/beehiiv");
+const { fetchBeehiivSubscribers, fetchBeehiivPosts } = require("../../lib/beehiiv");
 const { fetchRecentIncomingEmails, fetchRecentSentEmails } = require("../../lib/gmail");
 const { draftReply } = require("../../lib/claude");
 
@@ -34,6 +34,7 @@ module.exports = async (req, res) => {
     // CRM's own api/assessments/submit.js, not HubSpot. This job was just
     // failing every run with an auth error for data no longer needed here.
     ["cache:subscribers", fetchBeehiivSubscribers],
+    ["cache:newsletterPosts", fetchBeehiivPosts],
   ];
 
   const results = {};

@@ -28,15 +28,27 @@ dashboard project — it doesn't need its own separate project, just its own
 
 ## What's automated right now
 
-**Sync job** (`/api/cron/sync`) — runs every 2 hours (edit `vercel.json` to
-change that). Pulls fresh data from Zoho Campaigns, Zoho CRM (CPA + social
-leads), HubSpot (assessment completions), and Beehiiv (subscribers), and
-caches it in Vercel KV. The five public routes the CRM calls
+**Sync job** (`/api/cron/sync`) — runs on the schedule in `vercel.json`.
+Pulls fresh data from Zoho Campaigns, Zoho CRM (CPA + social leads), HubSpot
+(assessment completions), and Beehiiv (subscribers + newsletter post stats),
+and caches it in Vercel KV. The cache-only routes the CRM calls
 (`/api/zoho/campaigns`, `/api/zoho/leads/cpa`, `/api/zoho/leads/social`,
-`/api/hubspot/assessments`, `/api/beehiiv/subscribers`) read from that cache
-first, so the CRM stays fast and never waits on a live API call. If the cache
-is empty (first run, before cron has fired), each route falls back to a live
-fetch automatically.
+`/api/hubspot/assessments`, `/api/beehiiv/subscribers`, `/api/beehiiv/posts`)
+read from that cache only — they never call the upstream API directly, even
+on a cache miss, so viewing the CRM can never itself trigger a rate limit.
+
+**Subscribe someone to the newsletter** (`/api/beehiiv/subscribe`, POST) —
+the one write route in this group that *does* call Beehiiv live, since it's
+a single deliberate click from a client's Campaigns tab, not a page load.
+Takes `{ email, firstName, lastName }`, creates (or reactivates) a Beehiiv
+subscription, and the CRM marks that client subscribed in its own record.
+
+**Newsletter & Nurture performance tab** — pulls two different things
+side by side: real per-issue opens/clicks for the newsletter itself (from
+Beehiiv's `posts?expand=stats`, cached via the sync job above) and
+per-send opens/clicks for Zoho nurture sequences (from the same
+`cache:campaigns` the Marketing tab already used, filtered down to
+whatever's named `Nurture - ...`).
 
 **Triage agent** (`/api/cron/triage`) — runs daily at 1pm UTC. Finds
 assessment completions nobody's triaged yet, has Claude draft a short

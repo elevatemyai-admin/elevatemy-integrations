@@ -301,6 +301,8 @@ export default function App() {
   const [zohoLive, setZohoLive] = useState([]);
   const [zohoStatus, setZohoStatus] = useState("unconfigured"); // unconfigured | checking | live | error
   const [zohoError, setZohoError] = useState("");
+  const [beehiivPosts, setBeehiivPosts] = useState([]);
+  const [beehiivPostsStatus, setBeehiivPostsStatus] = useState("unconfigured"); // unconfigured | checking | live | error
   const [sourceData, setSourceData] = useState(() => Object.fromEntries(SOURCES.map(s => [s.key, { status: "unconfigured", items: [] }])));
 
   const loadCrmData = useCallback(async () => {
@@ -522,7 +524,7 @@ export default function App() {
 
   // -- client mutators --
   function patchClient(id, patch, activityText) { updateClients(prev => prev.map(c => c.id === id ? { ...c, ...patch } : c), activityText); }
-  function patchNested(id, section, patch) { updateClients(prev => prev.map(c => c.id === id ? { ...c, [section]: { ...c[section], ...patch } } : c)); }
+  function patchNested(id, section, patch, activityText) { updateClients(prev => prev.map(c => c.id === id ? { ...c, [section]: { ...c[section], ...patch } } : c), activityText); }
   function addClient(data) {
     const c = { ...emptyClient(), ...data };
     updateClients(prev => [c, ...prev], `Added client ${c.name || "Unnamed"}`);
@@ -598,6 +600,23 @@ export default function App() {
   }, []);
 
   useEffect(() => { checkZoho(); }, [checkZoho]);
+
+  // -- Beehiiv newsletter post stats (opens/clicks per issue) --
+  const checkBeehiivPosts = useCallback(async () => {
+    setBeehiivPostsStatus("checking");
+    try {
+      const res = await fetch(`${API_BASE}/beehiiv/posts`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setBeehiivPosts(Array.isArray(data) ? data : (data.items || []));
+      setBeehiivPostsStatus("live");
+    } catch (e) {
+      setBeehiivPostsStatus("error");
+      setBeehiivPosts([]);
+    }
+  }, []);
+
+  useEffect(() => { checkBeehiivPosts(); }, [checkBeehiivPosts]);
 
   const checkSources = useCallback(async () => {
     setSourceData(prev => Object.fromEntries(SOURCES.map(s => [s.key, { ...prev[s.key], status: "checking" }])));
@@ -678,6 +697,7 @@ export default function App() {
     { key: "import", label: "Import", icon: Inbox },
     { key: "tasks", label: "Tasks", icon: ListChecks },
     { key: "marketing", label: "Marketing", icon: Megaphone },
+    { key: "performance", label: "Newsletter & Nurture", icon: TrendingUp },
     { key: "content", label: "Content Studio", icon: Sparkles },
     { key: "actionsites", label: "Action Sites", icon: Globe },
     { key: "settings", label: "Settings", icon: SettingsIcon },
@@ -853,6 +873,7 @@ export default function App() {
               {view === "import" && "Import"}
               {view === "tasks" && "Tasks & Campaigns"}
               {view === "marketing" && "Marketing"}
+              {view === "performance" && "Newsletter & Nurture"}
               {view === "content" && "Content Studio"}
               {view === "actionsites" && "Action Sites"}
               {view === "settings" && "Settings"}
@@ -863,6 +884,7 @@ export default function App() {
               {view === "import" && "Pull in assessment takers, campaign responders, and subscribers from your connected systems."}
               {view === "tasks" && "What clients owe us, and what we owe clients."}
               {view === "marketing" && "CPA campaigns and prospecting activity, live from Zoho once connected."}
+              {view === "performance" && "Opens and clicks on newsletter issues (Beehiiv) and nurture sequences (Zoho)."}
               {view === "content" && "AI-drafted campaigns, emails, and social posts — review and approve, nothing goes out without you."}
               {view === "actionsites" && "Every client's live action-plan site, one click away."}
               {view === "settings" && "Connect the CRM to your Vercel API routes."}
@@ -897,6 +919,11 @@ export default function App() {
           ) : view === "marketing" ? (
             <MarketingView campaigns={marketingCampaigns} zohoLive={zohoLive} zohoStatus={zohoStatus} onRefresh={checkZoho}
               onAdd={addCampaign} onPatch={patchCampaign} onRemove={removeCampaign} apiConfigured={true} />
+          ) : view === "performance" ? (
+            <PerformanceView
+              zohoLive={zohoLive} zohoStatus={zohoStatus} onRefreshZoho={checkZoho}
+              beehiivPosts={beehiivPosts} beehiivPostsStatus={beehiivPostsStatus} onRefreshBeehiiv={checkBeehiivPosts}
+            />
           ) : view === "content" ? (
             <ContentStudioView
               marketingHub={marketingHub}
@@ -947,7 +974,7 @@ export default function App() {
               {detailTab === "assessment" && <AssessmentTab client={selectedClient} onPatch={(p) => patchNested(selectedClient.id, "assessment", p)} />}
               {detailTab === "campaigns" && (
                 <CampaignsTab client={selectedClient}
-                  onPatchNewsletter={(p) => patchNested(selectedClient.id, "newsletter", p)}
+                  onPatchNewsletter={(p, activityText) => patchNested(selectedClient.id, "newsletter", p, activityText)}
                   onPatchZoho={(p) => patchNested(selectedClient.id, "zoho", p)}
                   onAddSocial={() => addSocial(selectedClient.id)} onPatchSocial={(sid, p) => patchSocial(selectedClient.id, sid, p)} onRemoveSocial={(sid) => removeSocial(selectedClient.id, sid)}
                   apiConfigured={true} />
@@ -1533,6 +1560,92 @@ function MarketingView({ campaigns, zohoLive, zohoStatus, onRefresh, onAdd, onPa
                   </tr>
                 );
               })}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </>
+  );
+}
+
+// Nurture sequences run as regular Zoho Campaigns (see ZOHO_SETUP.md), named
+// "Nurture - <Tier>" — this regex is the only signal we have to split them
+// out from CPA/other campaigns in the same cache:campaigns list. Override
+// with ZOHO_NURTURE_CAMPAIGN_MATCH-style logic server-side if that naming
+// convention ever changes; kept as a simple client-side filter for now since
+// it only affects which table a campaign is grouped into, not any data
+// written anywhere.
+const NURTURE_NAME_RE = /nurture/i;
+
+function pct(n) {
+  if (n == null) return "—";
+  // Beehiiv returns open_rate/click_rate as whole percentages already (e.g. 45, not 0.45).
+  return `${Math.round(n)}%`;
+}
+
+function PerformanceView({ zohoLive, zohoStatus, onRefreshZoho, beehiivPosts, beehiivPostsStatus, onRefreshBeehiiv }) {
+  const nurtureCampaigns = (zohoLive || []).filter(c => NURTURE_NAME_RE.test(c.name || ""));
+
+  return (
+    <>
+      <div className="section-title">Newsletter — opens & clicks per issue</div>
+      {beehiivPostsStatus === "checking" && (
+        <div className="conn-banner conn-off"><Loader2 size={15} className="spin" /> Checking Beehiiv connection…</div>
+      )}
+      {beehiivPostsStatus === "error" && (
+        <div className="conn-banner conn-error"><WifiOff size={15} /> Couldn't reach Beehiiv. <button className="btn btn-ghost btn-sm" onClick={onRefreshBeehiiv}><RefreshCw size={12} /> Retry</button></div>
+      )}
+      {beehiivPostsStatus === "live" && (
+        <div className="conn-banner conn-live"><Wifi size={15} /> Connected — showing live post data from Beehiiv. <button className="btn btn-ghost btn-sm" onClick={onRefreshBeehiiv}><RefreshCw size={12} /> Refresh</button></div>
+      )}
+      <div className="card" style={{ padding: 8, marginBottom: 24 }}>
+        {beehiivPosts.length === 0 ? (
+          <div className="empty-state"><div className="display">No newsletter issues yet</div>Nothing returned from Beehiiv yet.</div>
+        ) : (
+          <table className="ctable">
+            <thead><tr><th>Issue</th><th>Sent</th><th>Recipients</th><th>Opens</th><th>Open rate</th><th>Clicks</th><th>Click rate</th></tr></thead>
+            <tbody>
+              {beehiivPosts.map(p => (
+                <tr key={p.id}>
+                  <td><div className="client-name" style={{ fontSize: 13.5 }}>{p.name}</div>{p.link && <a href={p.link} target="_blank" rel="noreferrer" style={{ fontSize: 11, color: "var(--navy)" }}>Open in Beehiiv ↗</a>}</td>
+                  <td>{p.publishDate ? fmtDate(p.publishDate.slice(0, 10)) : "—"}</td>
+                  <td>{p.recipients ?? "—"}</td>
+                  <td>{p.opens}</td>
+                  <td>{pct(p.openRate)}</td>
+                  <td>{p.clicks}</td>
+                  <td>{pct(p.clickRate)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      <div className="section-title">Nurture sequences — opens & clicks per send (Zoho)</div>
+      {zohoStatus === "checking" && (
+        <div className="conn-banner conn-off"><Loader2 size={15} className="spin" /> Checking Zoho connection…</div>
+      )}
+      {zohoStatus === "error" && (
+        <div className="conn-banner conn-error"><WifiOff size={15} /> Couldn't reach the Zoho route. <button className="btn btn-ghost btn-sm" onClick={onRefreshZoho}><RefreshCw size={12} /> Retry</button></div>
+      )}
+      {zohoStatus === "live" && (
+        <div className="conn-banner conn-live"><Wifi size={15} /> Connected — showing live campaign data from Zoho. <button className="btn btn-ghost btn-sm" onClick={onRefreshZoho}><RefreshCw size={12} /> Refresh</button></div>
+      )}
+      <div className="card" style={{ padding: 8 }}>
+        {nurtureCampaigns.length === 0 ? (
+          <div className="empty-state"><div className="display">No nurture sends yet</div>{zohoStatus === "live" ? "Nothing named \"Nurture - …\" found in Zoho yet." : "Connect Zoho to see live nurture stats."}</div>
+        ) : (
+          <table className="ctable">
+            <thead><tr><th>Sequence</th><th>Status</th><th>Opens</th><th>Clicks</th></tr></thead>
+            <tbody>
+              {nurtureCampaigns.map(c => (
+                <tr key={c.id}>
+                  <td><div className="client-name" style={{ fontSize: 13.5 }}>{c.name}</div>{c.link && <a href={c.link} target="_blank" rel="noreferrer" style={{ fontSize: 11, color: "var(--navy)" }}>Open campaign ↗</a>}</td>
+                  <td><Pill tone={c.status === "active" ? "green" : c.status === "paused" ? "gold" : "slate"}>{c.status}</Pill></td>
+                  <td>{c.opens || 0}</td>
+                  <td>{c.leads || 0}</td>
+                </tr>
+              ))}
             </tbody>
           </table>
         )}
@@ -2689,12 +2802,55 @@ function AssessmentTab({ client, onPatch }) {
   );
 }
 
+// One-click "actually subscribe this person" button — calls Beehiiv live
+// (unlike the rest of the Campaigns tab, which is just local CRM fields).
+// Only rendered when the client isn't already marked subscribed.
+function SubscribeToNewsletterButton({ client, onPatchNewsletter }) {
+  const [state, setState] = useState("idle"); // idle | sending | done | error
+  const [error, setError] = useState("");
+
+  async function subscribe() {
+    if (!client.email) return;
+    setState("sending");
+    setError("");
+    try {
+      const res = await fetch("/api/beehiiv/subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: client.email, firstName: client.firstName, lastName: client.lastName }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+      setState("done");
+      onPatchNewsletter({ subscribed: true }, `Subscribed ${client.name || client.email} to the newsletter via Beehiiv`);
+    } catch (e) {
+      setState("error");
+      setError(e.message || String(e));
+    }
+  }
+
+  if (!client.email) {
+    return <div style={{ fontSize: 11.5, color: "var(--slate)", marginTop: 4, marginBottom: 10 }}>Add an email address first to subscribe them.</div>;
+  }
+
+  return (
+    <div style={{ marginTop: 4, marginBottom: 14 }}>
+      <button className="btn btn-gold btn-sm" onClick={subscribe} disabled={state === "sending" || state === "done"}>
+        {state === "sending" ? <Loader2 size={13} className="spin" /> : <Mail size={13} />}
+        {state === "done" ? "Subscribed" : state === "sending" ? "Subscribing…" : "Subscribe via Beehiiv"}
+      </button>
+      {state === "error" && <div style={{ fontSize: 11.5, color: "var(--coral, #c0392b)", marginTop: 6 }}>Couldn't subscribe: {error}</div>}
+    </div>
+  );
+}
+
 function CampaignsTab({ client, onPatchNewsletter, onPatchZoho, onAddSocial, onPatchSocial, onRemoveSocial, apiConfigured }) {
   const n = client.newsletter || {}; const z = client.zoho || {};
   return (
     <div>
       <div className="section-title">Newsletter</div>
       <Field label="Subscribed?"><select value={n.subscribed ? "yes" : "no"} onChange={e => onPatchNewsletter({ subscribed: e.target.value === "yes" })}><option value="no">Not subscribed</option><option value="yes">Subscribed</option></select></Field>
+      {!n.subscribed && <SubscribeToNewsletterButton client={client} onPatchNewsletter={onPatchNewsletter} />}
       <Field label="Newsletter link"><input value={n.link} onChange={e => onPatchNewsletter({ link: e.target.value })} placeholder="https://…" /></Field>
       {n.link && <div className="link-row"><ExternalLink size={13} /><a href={n.link} target="_blank" rel="noreferrer">Open newsletter</a></div>}
       {(n.openRate != null || n.clickThroughRate != null) && (
