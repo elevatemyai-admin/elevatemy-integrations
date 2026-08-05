@@ -5,8 +5,8 @@
 
 const crypto = require("crypto");
 const { getCache, setCache } = require("../../lib/store");
-const { fetchZohoCampaigns, fetchZohoLeadsBySource, fetchZohoCampaignClickers, fetchZohoCampaignOpeners, addContactToEngagementNurture, removeContactFromRegularCpaList } = require("../../lib/zoho");
-const { fetchBeehiivSubscribers, fetchBeehiivPosts } = require("../../lib/beehiiv");
+const { fetchZohoCampaigns, fetchZohoLeadsBySource, fetchZohoCampaignClickers, fetchZohoCampaignOpeners, addContactToEngagementNurture, removeContactFromRegularCpaList, fetchNurtureMessageEngagement } = require("../../lib/zoho");
+const { fetchBeehiivSubscribers } = require("../../lib/beehiiv");
 const { fetchRecentIncomingEmails, fetchRecentSentEmails } = require("../../lib/gmail");
 const { draftReply } = require("../../lib/claude");
 
@@ -34,7 +34,6 @@ module.exports = async (req, res) => {
     // CRM's own api/assessments/submit.js, not HubSpot. This job was just
     // failing every run with an auth error for data no longer needed here.
     ["cache:subscribers", fetchBeehiivSubscribers],
-    ["cache:newsletterPosts", fetchBeehiivPosts],
   ];
 
   const results = {};
@@ -298,6 +297,59 @@ module.exports = async (req, res) => {
   } catch (e) {
     results["crm:zohoEngagementSync"] = { ok: false, error: e.message };
     console.error("[sync] upserting contacts/opportunities into crm:data failed:", e.message);
+  }
+
+  // Nurture-message engagement — did contacts open/click the follow-up
+  // email itself (sent by the "On List Entry" workflow), as distinct from
+  // the original CPA campaign. This is logged purely as activity history —
+  // it deliberately never touches status, tags, or engagementNurture[kind]
+  // flags, since re-running this shouldn't re-trigger enrollment into a
+  // list a contact is already on. Skips cleanly (0 changes, no error) if
+  // ZOHO_OPENED_NURTURE_MESSAGE_KEY / ZOHO_CLICKED_NURTURE_MESSAGE_KEY
+  // aren't set yet, or if the report-page ID format turns out not to be a
+  // valid campaignkey for this endpoint — check the [zoho] warn logs for
+  // "nurture-message ... failed" to tell those two cases apart.
+  try {
+    const crmData = (await getCache(CRM_DATA_KEY, null)) || { clients: [], marketingCampaigns: [], activityLog: [], settings: {}, emailTemplates: [], pendingEmails: [] };
+    let clients = crmData.clients || [];
+    let loggedCount = 0;
+
+    for (const kind of ["opened", "clicked"]) {
+      const { opens, clicks } = await fetchNurtureMessageEngagement(kind);
+      const eventsByEmail = new Map();
+      for (const email of opens) {
+        eventsByEmail.set(email, [...(eventsByEmail.get(email) || []), { type: `nurture_open_${kind}`, ts: new Date().toISOString() }]);
+      }
+      for (const email of clicks) {
+        eventsByEmail.set(email, [...(eventsByEmail.get(email) || []), { type: `nurture_click_${kind}`, ts: new Date().toISOString() }]);
+      }
+
+      for (const [email, newEvents] of eventsByEmail) {
+        const idx = clients.findIndex((c) => (c.email || "").toLowerCase().trim() === email);
+        if (idx === -1) continue; // should already exist from the original campaign upsert above
+        const existing = clients[idx];
+        const history = existing.engagementHistory || [];
+        // Dedup on type — since we don't have a real per-event timestamp
+        // from Zoho for these (only a snapshot "did they ever open/click"
+        // list), re-running this job would otherwise log a duplicate event
+        // every single sync. One logged event per contact per type is
+        // enough to show "engaged with nurture email" on their record.
+        const alreadyLogged = new Set(history.map((e) => e.type));
+        const toAdd = newEvents.filter((e) => !alreadyLogged.has(e.type));
+        if (!toAdd.length) continue;
+        clients[idx] = { ...existing, engagementHistory: [...history, ...toAdd].slice(-100) };
+        loggedCount += toAdd.length;
+      }
+    }
+
+    if (loggedCount) {
+      crmData.clients = clients;
+      await setCache(CRM_DATA_KEY, crmData);
+    }
+    results["crm:nurtureMessageEngagement"] = { ok: true, logged: loggedCount };
+  } catch (e) {
+    results["crm:nurtureMessageEngagement"] = { ok: false, error: e.message };
+    console.error("[sync] nurture-message engagement sync failed:", e.message);
   }
 
   // Beehiiv newsletter subscribers: enrich an EXISTING client's newsletter
