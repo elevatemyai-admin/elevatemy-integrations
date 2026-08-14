@@ -87,11 +87,20 @@ module.exports = async (req, res) => {
   // substring match.
   const CPA_CAMPAIGN_RE = new RegExp(process.env.ZOHO_CPA_CAMPAIGN_MATCH || "cpa", "i");
 
+  // Same heuristic, for financial planner/advisor outreach — independent
+  // regex since a contact could in principle match neither, either, or
+  // (rarely) both patterns. Default pattern covers "financial planner",
+  // "financial advisor", and a bare "FP" campaign-name prefix (matching
+  // the existing FP-tier assessment lists' naming convention). Override
+  // with ZOHO_FP_CAMPAIGN_MATCH if actual campaign naming differs.
+  const FP_CAMPAIGN_RE = new RegExp(process.env.ZOHO_FP_CAMPAIGN_MATCH || "financial.?planner|financial.?advisor|\\bfp\\b", "i");
+
   function upsertFromEngagement(clients, entry, targetStatus, activityNotes) {
     const email = (entry.email || "").toLowerCase().trim();
     if (!email) return clients;
     const idx = clients.findIndex((c) => (c.email || "").toLowerCase().trim() === email);
     const isCpa = CPA_CAMPAIGN_RE.test(entry.campaignName || "");
+    const isFp = FP_CAMPAIGN_RE.test(entry.campaignName || "");
 
     if (idx === -1) {
       // Brand new client — only opens/clicks with no prior record land here.
@@ -118,7 +127,7 @@ module.exports = async (req, res) => {
         email: entry.email,
         phone: "",
         status: targetStatus,
-        tags: isCpa ? ["CPA Lead"] : [],
+        tags: [...(isCpa ? ["CPA Lead"] : []), ...(isFp ? ["Financial Planner Lead"] : [])],
         createdAt: new Date().toISOString(),
         assessment: { path: "general", completed: false, date: "", categories: {}, overallScore: null, tier: "", grade: "", topOpportunity: "", deliveryModel: "", consultationBooked: false, consultationDate: "", notes: "" },
         newsletter: { subscribed: false, link: "" },
@@ -131,7 +140,8 @@ module.exports = async (req, res) => {
         tasks: [],
         billing: [],
       });
-      activityNotes.push(`Added ${entry.name || entry.email} as a ${targetStatus}${isCpa ? " (CPA Lead)" : ""} from ${entry.campaignName || "a campaign"}`);
+      const leadTagNote = [isCpa && "CPA Lead", isFp && "Financial Planner Lead"].filter(Boolean).join(", ");
+      activityNotes.push(`Added ${entry.name || entry.email} as a ${targetStatus}${leadTagNote ? ` (${leadTagNote})` : ""} from ${entry.campaignName || "a campaign"}`);
       return clients;
     }
 
@@ -143,7 +153,16 @@ module.exports = async (req, res) => {
     const currentTier = STATUS_TIER[existing.status] || 1;
     const targetTier = STATUS_TIER[targetStatus];
     const existingTags = existing.tags || [];
-    const nextTags = isCpa && !existingTags.includes("CPA Lead") ? [...existingTags, "CPA Lead"] : existingTags;
+    let nextTags = existingTags;
+    const newlyAddedTagNames = [];
+    if (isCpa && !existingTags.includes("CPA Lead")) {
+      nextTags = [...nextTags, "CPA Lead"];
+      newlyAddedTagNames.push("CPA Lead");
+    }
+    if (isFp && !existingTags.includes("Financial Planner Lead")) {
+      nextTags = [...nextTags, "Financial Planner Lead"];
+      newlyAddedTagNames.push("Financial Planner Lead");
+    }
 
     // Self-heal firstName/lastName on records THIS sync created (id starts
     // with "zoho_") using Zoho's authoritative firstname/lastname fields —
@@ -177,7 +196,7 @@ module.exports = async (req, res) => {
       if (targetTier > currentTier) {
         activityNotes.push(`${existing.name || existing.email} upgraded to ${targetStatus} (clicked ${entry.campaignName || "a campaign"})`);
       } else if (nextTags !== existingTags) {
-        activityNotes.push(`${existing.name || existing.email} tagged CPA Lead (${entry.campaignName || "a campaign"})`);
+        activityNotes.push(`${existing.name || existing.email} tagged ${newlyAddedTagNames.join(", ")} (${entry.campaignName || "a campaign"})`);
       } else if (nameFixNeeded) {
         activityNotes.push(`Corrected name for ${entry.email}`);
       }
