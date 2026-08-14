@@ -11,7 +11,7 @@ import {
 
 const LEAD_SOURCES = [
   "LinkedIn DM", "LinkedIn post/comment", "Referral", "Cold email",
-  "Website / assessment", "Facebook", "CPA campaign", "In person", "Other",
+  "Website / assessment", "Facebook", "CPA campaign", "Financial Planner campaign", "In person", "Other",
 ];
 
 const STAGES = [
