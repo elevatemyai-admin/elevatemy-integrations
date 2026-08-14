@@ -237,6 +237,67 @@ module.exports = async (req, res) => {
     return clients;
   }
 
+  // Marks a contact's CRM tags with "Completed - Opened Nurture" /
+  // "Completed - Clicked Nurture" once enough time has passed since they
+  // were enrolled (engagementNurture[kind].enrolledAt) for the whole Zoho
+  // "On List Entry" message sequence to have finished sending.
+  //
+  // This is a TIME-BASED estimate, not a live check against Zoho. Zoho's
+  // own workflow already removes the contact from the list as its own
+  // final action (Tag Contact + Remove from List, added directly in the
+  // Zoho workflow builder) — that's what actually frees room on the list
+  // and marks them "Exited" in Zoho's own reporting. This function exists
+  // purely because Zoho's native contact tags don't sync back into this
+  // CRM's `tags` array automatically — completion needs its own signal
+  // here, independent of what Zoho does on its side.
+  //
+  // IMPORTANT: these day counts must be >= the sum of every Wait step's
+  // duration in the matching Zoho workflow, plus a small buffer for send
+  // lag (a day or two is plenty). If the Wait durations in Zoho ever
+  // change, update the matching env var too — otherwise contacts could
+  // get tagged "Completed" in the CRM before they've actually received
+  // the last real email.
+  const NURTURE_COMPLETION_DAYS = {
+    opened: Number(process.env.NURTURE_COMPLETION_DAYS_OPENED || 14),
+    clicked: Number(process.env.NURTURE_COMPLETION_DAYS_CLICKED || 14),
+  };
+  const NURTURE_COMPLETION_TAG = {
+    opened: "Completed - Opened Nurture",
+    clicked: "Completed - Clicked Nurture",
+  };
+
+  // Only tags contacts who were actually successfully enrolled
+  // (nurture.nurtureOk — mirrors the same success flag already written by
+  // enrollInNurtureAndDropFromRegularList above) and haven't already been
+  // tagged complete (nurture.completedAt guards against re-tagging/
+  // re-logging the same contact every single sync run once they pass the
+  // threshold).
+  function tagCompletedNurture(clients, kind, activityNotes) {
+    const thresholdMs = NURTURE_COMPLETION_DAYS[kind] * 24 * 60 * 60 * 1000;
+    const tag = NURTURE_COMPLETION_TAG[kind];
+
+    return clients.map((c) => {
+      const nurture = c.engagementNurture?.[kind];
+      if (!nurture || !nurture.nurtureOk || nurture.completedAt) return c;
+
+      const enrolledAt = new Date(nurture.enrolledAt).getTime();
+      if (Date.now() - enrolledAt < thresholdMs) return c;
+
+      const tags = c.tags || [];
+      const nextTags = tags.includes(tag) ? tags : [...tags, tag];
+      activityNotes.push(`${c.name || c.email} marked "${tag}" (sequence should be finished)`);
+
+      return {
+        ...c,
+        tags: nextTags,
+        engagementNurture: {
+          ...c.engagementNurture,
+          [kind]: { ...nurture, completedAt: new Date().toISOString() },
+        },
+      };
+    });
+  }
+
   try {
     const clickers = results["cache:campaignClickers"]?.ok ? await getCache("cache:campaignClickers", []) : [];
     const openers = results["cache:campaignOpeners"]?.ok ? await getCache("cache:campaignOpeners", []) : [];
@@ -285,6 +346,9 @@ module.exports = async (req, res) => {
     for (const clicker of clickers) {
       clients = await enrollInNurtureAndDropFromRegularList(clients, clicker, "clicked", activityNotes);
     }
+
+    clients = tagCompletedNurture(clients, "opened", activityNotes);
+    clients = tagCompletedNurture(clients, "clicked", activityNotes);
 
     crmData.clients = clients;
     if (activityNotes.length) {
