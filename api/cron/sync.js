@@ -128,6 +128,13 @@ module.exports = async (req, res) => {
         phone: "",
         status: targetStatus,
         tags: [...(isCpa ? ["CPA Lead"] : []), ...(isFp ? ["Financial Planner Lead"] : [])],
+        // Matches the LEAD_SOURCES dropdown options in the CRM UI exactly
+        // ("CPA campaign" / "Financial Planner campaign") — previously this
+        // field was never set for engagement-created clients at all, so it
+        // sat blank even when the campaign source was known. If a contact
+        // matches neither pattern, leave it unset for manual entry, same as
+        // before.
+        leadSource: isCpa ? "CPA campaign" : (isFp ? "Financial Planner campaign" : ""),
         createdAt: new Date().toISOString(),
         assessment: { path: "general", completed: false, date: "", categories: {}, overallScore: null, tier: "", grade: "", topOpportunity: "", deliveryModel: "", consultationBooked: false, consultationDate: "", notes: "" },
         newsletter: { subscribed: false, link: "" },
@@ -149,19 +156,32 @@ module.exports = async (req, res) => {
     // touch active/inactive (those are manually-managed relationship states).
     // Tags are additive regardless of status tier — a CPA campaign click
     // should tag them even if their status doesn't change this run.
+    //
+    // tagsLocked is a manual escape hatch: without it, this auto-tagging
+    // logic re-derives isCpa/isFp from campaign name on EVERY sync run, so
+    // a one-off manual correction (e.g. removing a wrong "CPA Lead" tag
+    // from someone who was on the wrong list by mistake, like a financial
+    // planner who received CPA outreach) gets silently re-added the very
+    // next time sync runs — the underlying campaign-name match never
+    // changes, so nothing here previously remembered that a human already
+    // fixed it. Once tagsLocked is true on a client record, this whole
+    // auto-tag block is skipped entirely for them — their tags become
+    // fully manually managed going forward, until someone unsets the flag.
     const existing = clients[idx];
     const currentTier = STATUS_TIER[existing.status] || 1;
     const targetTier = STATUS_TIER[targetStatus];
     const existingTags = existing.tags || [];
     let nextTags = existingTags;
     const newlyAddedTagNames = [];
-    if (isCpa && !existingTags.includes("CPA Lead")) {
-      nextTags = [...nextTags, "CPA Lead"];
-      newlyAddedTagNames.push("CPA Lead");
-    }
-    if (isFp && !existingTags.includes("Financial Planner Lead")) {
-      nextTags = [...nextTags, "Financial Planner Lead"];
-      newlyAddedTagNames.push("Financial Planner Lead");
+    if (!existing.tagsLocked) {
+      if (isCpa && !existingTags.includes("CPA Lead")) {
+        nextTags = [...nextTags, "CPA Lead"];
+        newlyAddedTagNames.push("CPA Lead");
+      }
+      if (isFp && !existingTags.includes("Financial Planner Lead")) {
+        nextTags = [...nextTags, "Financial Planner Lead"];
+        newlyAddedTagNames.push("Financial Planner Lead");
+      }
     }
 
     // Self-heal firstName/lastName on records THIS sync created (id starts
