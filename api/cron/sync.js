@@ -5,7 +5,7 @@
 
 const crypto = require("crypto");
 const { getCache, setCache } = require("../../lib/store");
-const { fetchZohoCampaigns, fetchZohoLeadsBySource, fetchZohoCampaignClickers, fetchZohoCampaignOpeners, addContactToEngagementNurture, removeContactFromRegularCpaList, fetchNurtureMessageEngagement } = require("../../lib/zoho");
+const { fetchZohoCampaigns, fetchZohoLeadsBySource, fetchZohoCampaignClickers, fetchZohoCampaignOpeners, fetchRegularOutreachEngagement, addContactToEngagementNurture, removeContactFromRegularCpaList, fetchNurtureMessageEngagement } = require("../../lib/zoho");
 const { fetchBeehiivSubscribers } = require("../../lib/beehiiv");
 const { fetchRecentIncomingEmails, fetchRecentSentEmails } = require("../../lib/gmail");
 const { draftReply } = require("../../lib/claude");
@@ -338,8 +338,29 @@ module.exports = async (req, res) => {
   }
 
   try {
-    const clickers = results["cache:campaignClickers"]?.ok ? await getCache("cache:campaignClickers", []) : [];
-    const openers = results["cache:campaignOpeners"]?.ok ? await getCache("cache:campaignOpeners", []) : [];
+    let clickers = results["cache:campaignClickers"]?.ok ? await getCache("cache:campaignClickers", []) : [];
+    let openers = results["cache:campaignOpeners"]?.ok ? await getCache("cache:campaignOpeners", []) : [];
+
+    // CPA – Regular Outreach's 3 workflow messages aren't discovered by
+    // fetchZohoCampaigns() at all (confirmed Aug 17, 2026 — see
+    // fetchRegularOutreachEngagement's comment in lib/zoho.js). Merge
+    // their real opens/clicks into the same arrays so these contacts get
+    // full CRM treatment below (new record, tagging, nurture enrollment) —
+    // exactly like the original campaign's clickers/openers, not just a
+    // logged note.
+    try {
+      const regularOutreach = await fetchRegularOutreachEngagement();
+      clickers = [...clickers, ...regularOutreach.clickers];
+      openers = [...openers, ...regularOutreach.openers];
+      results["cache:regularOutreachEngagement"] = {
+        ok: true,
+        openersFound: regularOutreach.openers.length,
+        clickersFound: regularOutreach.clickers.length,
+      };
+    } catch (e) {
+      results["cache:regularOutreachEngagement"] = { ok: false, error: e.message };
+      console.error("[sync] Regular Outreach engagement fetch failed:", e.message);
+    }
 
     const crmData = (await getCache(CRM_DATA_KEY, null)) || { clients: [], marketingCampaigns: [], activityLog: [], settings: {}, emailTemplates: [], pendingEmails: [] };
     let clients = crmData.clients || [];
